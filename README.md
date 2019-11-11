@@ -20,11 +20,20 @@ year={2016},
   Title = {Ternary Weight Networks},
   Year = {2016}
 }
+
+@InProceedings{pkt_eccv,
+author = {Passalis, Nikolaos and Tefas, Anastasios},
+title = {Learning Deep Representations with Probabilistic Knowledge Transfer},
+booktitle = {Proceedings of the European Conference on Computer Vision (ECCV)},
+year = {2018}
+}
 ```
 [[Github]](https://github.com/Mxbonn/INQ-pytorch)
 
 [[Github]](https://github.com/TropComplique/trained-ternary-quantization)
 
 [[Github]](https://github.com/fengfu-chris/caffe-twns)
+
+[[Github]](https://github.com/passalis/probabilistic_kt)
 
 
