@@ -110,7 +110,7 @@ parser.add_argument("--weight_decay", type=float,
                     help="L2 Regularization strength")
 
 parser.add_argument("--sharp", type=float,
-                    default=1e-3,
+                    default=1e-4,
                     help="sharpening hyper_parameter")
 
 parser.add_argument("--resume", type=str2bool,
