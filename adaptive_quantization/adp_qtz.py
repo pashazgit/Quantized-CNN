@@ -114,7 +114,7 @@ parser.add_argument("--sharp", type=float,
                     help="sharpening hyper_parameter")
 
 parser.add_argument("--resume", type=str2bool,
-                    default=True,
+                    default=False,
                     help="Whether to resume training from existing checkpoint")
 
 
@@ -227,6 +227,10 @@ def train(config):
     # Training loop
     for epoch in tqdm(range(start_epoch, config.num_epoch)):
         # print("adp_qtz_epoch: ", epoch)
+        if epoch == 20 == 0:
+            optimizer_param.param_groups[0]['lr'] /= 10
+            optimizer_q.param_groups[0]['lr'] /= 10
+
         for x, y in train_loader:
             # print("adp_qtz_iter_idx: ", iter_idx)
             iter_idx += 1  # Counter
@@ -248,7 +252,7 @@ def train(config):
 
             # Monitor results every report interval
             if iter_idx % config.rep_intv == 0:
-                print('adp_qtz_iter_idx: ', iter_idx)
+                # print('adp_qtz_iter_idx: ', iter_idx)
                 # compute accuracies
                 acc1, acc5 = accuracy(logits, y, topk=(1, 5))
                 # Write loss and accuracy to tensorboard, using keywords `loss` and `accuracy`.
