@@ -8,8 +8,8 @@
 
 from pdb import set_trace as bp
 import sys
-# sys.path.insert(0, "./fw-df-ttq41/input_pipeline")
-# sys.path.insert(0, "./fw-df-ttq41/utils")
+# sys.path.insert(0, "./adaptive_quantization/input_pipeline")
+# sys.path.insert(0, "./adaptive_quantization/utils")
 import os
 import numpy as np
 import torch
@@ -53,13 +53,25 @@ parser.add_argument("--data_dir", type=str,
                     default="/home/pasha/scratch/datasets/cifar-10-batches-py",
                     help="")
 
+# parser.add_argument("--data_dir", type=str,
+#                     default="/home/mostafa/Downloads/datasets/cifar-10-batches-py",
+#                     help="")
+
 parser.add_argument("--save_dir", type=str,
-                    default="/home/pasha/scratch/jobs/output",
+                    default="/home/pasha/scratch/adaptive_quantization/jobs/output/saves",
                     help="Directory to save the best model")
 
+# parser.add_argument("--save_dir", type=str,
+#                     default="/home/mostafa/Uvic/Thesis/DL-compression/implementation/adaptive_quantization/jobs/output/saves",
+#                     help="Directory to save the best model")
+
 parser.add_argument("--log_dir", type=str,
-                    default="/home/pasha/scratch/jobs/output",
+                    default="/home/pasha/scratch/adaptive_quantization/jobs/output/logs",
                     help="Directory to save logs and current model")
+
+# parser.add_argument("--log_dir", type=str,
+#                     default="/home/mostafa/Uvic/Thesis/DL-compression/implementation/adaptive_quantization/jobs/output/logs",
+#                     help="Directory to save logs and current model")
 
 parser.add_argument("--beta", type=float,
                     default=2,
@@ -70,27 +82,27 @@ parser.add_argument("--gamma", type=float,
                     help="Learning rate (gradient step size)")
 
 parser.add_argument("--param_lr", type=float,
-                    default=1e-4,
+                    default=1e-3,
                     help="Learning rate (gradient step size)")
 
 parser.add_argument("--q_lr", type=float,
-                    default=1e-5,
+                    default=1e-4,
                     help="Learning rate (gradient step size)")
 
 parser.add_argument("--batch_size", type=int,
-                    default=128,
+                    default=100,
                     help="Size of each training batch")
 
 parser.add_argument("--num_epoch", type=int,
-                    default=1,
+                    default=60,
                     help="Number of epochs to train")
 
 parser.add_argument("--val_intv", type=int,
-                    default=1000,
+                    default=400,
                     help="Validation interval")
 
 parser.add_argument("--rep_intv", type=int,
-                    default=1000,
+                    default=400,
                     help="Report interval")
 
 parser.add_argument("--weight_decay", type=float,
@@ -101,12 +113,8 @@ parser.add_argument("--sharp", type=float,
                     default=1e-3,
                     help="sharpening hyper_parameter")
 
-parser.add_argument("--threshold", type=float,
-                    default=0.05,
-                    help="ternarization threshold")
-
 parser.add_argument("--resume", type=str2bool,
-                    default=False,
+                    default=True,
                     help="Whether to resume training from existing checkpoint")
 
 
@@ -169,17 +177,17 @@ def train(config):
     optimizer_q = optim.Adam([param for name, param in model.named_parameters() if 'q_level' in name],
                              lr=config.q_lr)
 
-    # Create summary writer
-    train_writer = SummaryWriter(
-        log_dir=os.path.join(config.log_dir, "train_adp_qtz"))
-    val_writer = SummaryWriter(
-        log_dir=os.path.join(config.log_dir, "valid_adp_qtz"))
-
     # Create log directory and save directory if it does not exist
     if not os.path.exists(config.log_dir):
         os.makedirs(config.log_dir)
     if not os.path.exists(config.save_dir):
         os.makedirs(config.save_dir)
+
+    # Create summary writer
+    train_writer = SummaryWriter(
+        log_dir=os.path.join(config.log_dir, "train_adp_qtz"))
+    val_writer = SummaryWriter(
+        log_dir=os.path.join(config.log_dir, "valid_adp_qtz"))
 
     # Initialize training
     start_epoch = 0
@@ -211,16 +219,16 @@ def train(config):
             # Resume model
             model.load_state_dict(load_res["model"])
             # Resume optimizer
-            optimizer_param.load_state_dict(load_res["optimizer"])
-            optimizer_q.load_state_dict(load_res["optimizer_fp"])
+            optimizer_param.load_state_dict(load_res["optimizer_param"])
+            optimizer_q.load_state_dict(load_res["optimizer_q"])
         else:
             os.remove(checkpoint_file)
 
     # Training loop
     for epoch in tqdm(range(start_epoch, config.num_epoch)):
-        print("fw_sf_ttq_epoch: ", epoch)
+        # print("adp_qtz_epoch: ", epoch)
         for x, y in train_loader:
-            print("fw_sf_ttq_iter_idx: ", iter_idx)
+            # print("adp_qtz_iter_idx: ", iter_idx)
             iter_idx += 1  # Counter
             # Send data to GPU if we have one
             if torch.cuda.is_available():
@@ -230,15 +238,17 @@ def train(config):
             # Compute the loss
             loss = criterion(logits, y) + \
                    config.sharp * entropy_loss(config, model) + config.weight_decay * model_loss(config, model)
-            # Zero the parameter gradients
-            optimizer_param.zero_grad()
-            optimizer_q.zero_grad()
             # Compute gradients
             loss.backward()
             optimizer_param.step()
             optimizer_q.step()
+            # Zero the parameter gradients
+            optimizer_param.zero_grad()
+            optimizer_q.zero_grad()
+
             # Monitor results every report interval
             if iter_idx % config.rep_intv == 0:
+                print('adp_qtz_iter_idx: ', iter_idx)
                 # compute accuracies
                 acc1, acc5 = accuracy(logits, y, topk=(1, 5))
                 # Write loss and accuracy to tensorboard, using keywords `loss` and `accuracy`.
@@ -254,6 +264,7 @@ def train(config):
                     "optimizer_param": optimizer_param.state_dict(),
                     "optimizer_q": optimizer_q.state_dict()
                 }, checkpoint_file)
+
             # Validate results every validation interval
             if iter_idx % config.val_intv == 0:
                 # Set model for evaluation
@@ -301,7 +312,7 @@ def train(config):
                         "optimizer_q": optimizer_q.state_dict()
                     }, bestmodel_file)
 
-        print("adp_qtz_best_val_acc1: ", best_val_acc1)
+    print("adp_qtz_best_val_acc1: ", best_val_acc1)
 
 
 def test(config):
@@ -472,10 +483,10 @@ class MyConv2d(nn.Module):
     def forward(self, x):
         p_w_norm = torch.sqrt(torch.sum(self.p_w**2, dim=-1, keepdim=True))
         p_w_normal = self.p_w / p_w_norm
-        t = torch.exp(self.beta * p_w_normal) / \
-            torch.sum(torch.exp(self.beta * p_w_normal), dim=-1, keepdim=True)
-        s_w = t ** self.gamma / \
-            torch.sum(t ** self.gamma, dim=-1, keepdim=True)  # the secondary weights
+        s_w = torch.exp(self.beta * p_w_normal) / \
+            torch.sum(torch.exp(self.beta * p_w_normal), dim=-1, keepdim=True)  # the secondary weights
+        # s_w = t ** self.gamma / \
+        #     torch.sum(t ** self.gamma, dim=-1, keepdim=True)  # the secondary weights
         if self.mode == 'train':
             c_w = torch.matmul(s_w, self.q_level)  # the conv layer's weights
         elif self.mode == 'test':
@@ -494,14 +505,16 @@ class MyConv2d(nn.Module):
             for _j in range(self.ksize):
                 # Get the region that we will apply for this part of the convolution kernel
                 cur_x = x[:, :, range(_j, _j + h, self.stride), :][:, :, :, range(_i, _i + w, self.stride)]
+                h_n = cur_x.shape[2]
+                w_n = cur_x.shape[3]
                 # Make matrix multiplication ready
-                cur_x = cur_x.reshape(cur_x.shape[0], cur_x.shape[1], cur_x.shape[2] * cur_x.shape[3])
+                cur_x = cur_x.reshape(x.shape[0], x.shape[1], h_n * w_n)
                 # Get the current multiplication kernel
                 cur_w = c_w[:, :, _j, _i]
                 # Left multiply
                 cur_o = torch.matmul(cur_w, cur_x)
                 # Return to original shape
-                cur_o = cur_o.reshape(x.shape[0], c_w.shape[0], h, w)
+                cur_o = cur_o.reshape(x.shape[0], c_w.shape[0], h_n, w_n)
                 # Cumulative sum
                 if x_out is None:
                     x_out = cur_o
@@ -520,7 +533,7 @@ class PreActBlock(nn.Module):
         self.bn1 = nn.BatchNorm2d(in_planes)
         self.conv1 = MyConv2d(config, in_planes, planes, ksize=3, stride=stride, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(planes)
-        self.conv2 = MyConv2d(config, in_planes, planes, ksize=3, stride=1, padding=1, bias=False)
+        self.conv2 = MyConv2d(config, planes, planes, ksize=3, stride=1, padding=1, bias=False)
 
         self.shortcut = nn.Sequential()
         if stride != 1 or in_planes != self.expansion*planes:
@@ -582,10 +595,10 @@ def model_loss(config, model):
             q_level = param
             p_w_norm = torch.sqrt(torch.sum(p_w ** 2, dim=-1, keepdim=True))
             p_w_normal = p_w / p_w_norm
-            t = torch.exp(config.beta * p_w_normal) / \
-                torch.sum(torch.exp(config.beta * p_w_normal), dim=-1, keepdim=True)
-            s_w = t ** config.gamma / \
-                  torch.sum(t ** config.gamma, dim=-1, keepdim=True)  # the secondary weights
+            s_w = torch.exp(config.beta * p_w_normal) / \
+                torch.sum(torch.exp(config.beta * p_w_normal), dim=-1, keepdim=True)  # the secondary weights
+            # s_w = t ** config.gamma / \
+            #       torch.sum(t ** config.gamma, dim=-1, keepdim=True)  # the secondary weights
             c_w = torch.matmul(s_w, q_level)  # the conv layer's weights
             loss += torch.sum(c_w ** 2)
 
@@ -594,18 +607,15 @@ def model_loss(config, model):
 
 def entropy_loss(config, model):
     loss = 0
-    p_w = None
     for name, param in model.named_parameters():
         if 'p_w' in name:
             p_w = param
-        if 'q_level' in name:
-            q_level = param
             p_w_norm = torch.sqrt(torch.sum(p_w ** 2, dim=-1, keepdim=True))
             p_w_normal = p_w / p_w_norm
-            t = torch.exp(config.beta * p_w_normal) / \
-                torch.sum(torch.exp(config.beta * p_w_normal), dim=-1, keepdim=True)
-            s_w = t ** config.gamma / \
-                  torch.sum(t ** config.gamma, dim=-1, keepdim=True)  # the secondary weights
+            s_w = torch.exp(config.beta * p_w_normal) / \
+                torch.sum(torch.exp(config.beta * p_w_normal), dim=-1, keepdim=True)  # the secondary weights
+            # s_w = t ** config.gamma / \
+            #       torch.sum(t ** config.gamma, dim=-1, keepdim=True)  # the secondary weights
             loss -= torch.sum(s_w * torch.log(s_w))
 
     return loss
@@ -613,16 +623,17 @@ def entropy_loss(config, model):
 
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
+    res = []
     with torch.no_grad():
         maxk = max(topk)
         batch_size = output.size(0)
         pred = output.topk(maxk, 1, largest=True, sorted=True)[1]
         correct = pred.eq(target.unsqueeze(dim=1).expand_as(pred)).t()
-        res = []
         for k in topk:
             correct_k = correct[:k].float().sum().mul_(100.0 / batch_size)
             res.append(correct_k)
-        return res
+
+    return res
 
 
 if __name__ == "__main__":
