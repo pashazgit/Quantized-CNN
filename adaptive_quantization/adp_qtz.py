@@ -227,7 +227,7 @@ def train(config):
     # Training loop
     for epoch in tqdm(range(start_epoch, config.num_epoch)):
         # print("adp_qtz_epoch: ", epoch)
-        if epoch == 20 == 0:
+        if epoch == 20:
             optimizer_param.param_groups[0]['lr'] /= 10
             optimizer_q.param_groups[0]['lr'] /= 10
 
