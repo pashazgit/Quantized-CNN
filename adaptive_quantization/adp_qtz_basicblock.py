@@ -537,7 +537,7 @@ class BasicBlock(nn.Module):
         super(BasicBlock, self).__init__()
         self.conv1 = MyConv2d(config, in_planes, planes, ksize=3, stride=stride, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = MyConv2d(config, in_planes, planes, ksize=3, stride=stride, padding=1, bias=False)
+        self.conv2 = MyConv2d(config, planes, planes, ksize=3, stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(planes)
 
         self.shortcut = nn.Sequential()

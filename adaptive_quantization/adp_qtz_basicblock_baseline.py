@@ -6,7 +6,7 @@
 # Copyright (C), https://github.com/vinsis/ternary-quantization
 
 
-from pdb import set_trace as bp
+import pdb
 import sys
 # sys.path.insert(0, "./adaptive_quantization/input_pipeline")
 # sys.path.insert(0, "./adaptive_quantization/utils")
@@ -141,7 +141,7 @@ def train(config):
         shuffle=False)
 
     # Create model instance.
-    model = ResNet(config, BasicBlock, [2, 2, 2, 2], num_classes=10)
+    model = ResNet(BasicBlock, [2, 2, 2, 2], num_classes=10)
     print('\nmodel created')
     # Move model to gpu if cuda is available
     if torch.cuda.is_available():
@@ -434,7 +434,7 @@ class CIFAR10Dataset(Dataset):
 
 class MyConv2d(nn.Module):
 
-    def __init__(self, config, inchannel, outchannel, ksize, stride, padding, bias=False):
+    def __init__(self, inchannel, outchannel, ksize, stride, padding, bias=False):
         super(MyConv2d, self).__init__()
         # Our custom convolution kernel. We'll initialize it using Kaiming He's
         # initialization with uniform distribution
@@ -483,11 +483,11 @@ class MyConv2d(nn.Module):
 class BasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, config, in_planes, planes, stride=1):
+    def __init__(self, in_planes, planes, stride=1):
         super(BasicBlock, self).__init__()
-        self.conv1 = MyConv2d(config, in_planes, planes, ksize=3, stride=stride, padding=1, bias=False)
+        self.conv1 = MyConv2d(in_planes, planes, ksize=3, stride=stride, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = MyConv2d(config, in_planes, planes, ksize=3, stride=stride, padding=1, bias=False)
+        self.conv2 = MyConv2d(planes, planes, ksize=3, stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(planes)
 
         self.shortcut = nn.Sequential()
@@ -506,11 +506,10 @@ class BasicBlock(nn.Module):
 
 class ResNet(nn.Module):
 
-    def __init__(self, config, block, num_blocks, num_classes):
+    def __init__(self, block, num_blocks, num_classes):
         super(ResNet, self).__init__()
         self.in_planes = 64
-        self.config = config
-        self.conv1 = MyConv2d(config, inchannel=3, outchannel=64, ksize=3, stride=1, padding=1, bias=False)
+        self.conv1 = MyConv2d(inchannel=3, outchannel=64, ksize=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
@@ -523,7 +522,7 @@ class ResNet(nn.Module):
         strides = [stride] + [1]*(num_blocks-1)
         layers = []
         for stride in strides:
-            layers.append(block(self.config, self.in_planes, planes, stride))
+            layers.append(block(self.in_planes, planes, stride))
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
