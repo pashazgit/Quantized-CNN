@@ -1,4 +1,4 @@
-4
+
 # Copyright (C), Visual Computing Group @ University of Victoria.
 # Copyright (C), https://github.com/pytorch/examples/blob/master/imagenet/main.py
 # Copyright (C), https://github.com/TropComplique/trained-ternary-quantization
@@ -73,20 +73,8 @@ parser.add_argument("--log_dir", type=str,
 #                     default="/home/mostafa/Uvic/Thesis/DL-compression/implementation/adaptive_quantization/jobs/output/logs",
 #                     help="Directory to save logs and current model")
 
-parser.add_argument("--beta", type=float,
-                    default=2,
-                    help="Learning rate (gradient step size)")
-
-parser.add_argument("--gamma", type=float,
-                    default=2,
-                    help="Learning rate (gradient step size)")
-
-parser.add_argument("--param_lr", type=float,
+parser.add_argument("--learning_rate", type=float,
                     default=1e-3,
-                    help="Learning rate (gradient step size)")
-
-parser.add_argument("--q_lr", type=float,
-                    default=1e-4,
                     help="Learning rate (gradient step size)")
 
 parser.add_argument("--batch_size", type=int,
@@ -94,7 +82,7 @@ parser.add_argument("--batch_size", type=int,
                     help="Size of each training batch")
 
 parser.add_argument("--num_epoch", type=int,
-                    default=60,
+                    default=90,
                     help="Number of epochs to train")
 
 parser.add_argument("--val_intv", type=int,
@@ -108,10 +96,6 @@ parser.add_argument("--rep_intv", type=int,
 parser.add_argument("--weight_decay", type=float,
                     default=1e-4,
                     help="L2 Regularization strength")
-
-parser.add_argument("--sharp", type=float,
-                    default=1e-4,
-                    help="sharpening hyper_parameter")
 
 parser.add_argument("--resume", type=str2bool,
                     default=False,
@@ -157,7 +141,7 @@ def train(config):
         shuffle=False)
 
     # Create model instance.
-    model = ResNet(config, PreActBlock, [2, 2, 2, 2], num_classes=10)
+    model = ResNet(config, BasicBlock, [2, 2, 2, 2], num_classes=10)
     print('\nmodel created')
     # Move model to gpu if cuda is available
     if torch.cuda.is_available():
@@ -172,10 +156,7 @@ def train(config):
         criterion = criterion.cuda()
 
     # create optimizer
-    optimizer_param = optim.Adam([param for name, param in model.named_parameters() if 'q_level' not in name],
-                                 lr=config.param_lr)
-    optimizer_q = optim.Adam([param for name, param in model.named_parameters() if 'q_level' in name],
-                             lr=config.q_lr)
+    optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
 
     # Create log directory and save directory if it does not exist
     if not os.path.exists(config.log_dir):
@@ -185,17 +166,17 @@ def train(config):
 
     # Create summary writer
     train_writer = SummaryWriter(
-        log_dir=os.path.join(config.log_dir, "train_adp_qtz"))
+        log_dir=os.path.join(config.log_dir, "train_adp_qtz_basicblock_baseline"))
     val_writer = SummaryWriter(
-        log_dir=os.path.join(config.log_dir, "valid_adp_qtz"))
+        log_dir=os.path.join(config.log_dir, "valid_adp_qtz_basicblock_baseline"))
 
     # Initialize training
     start_epoch = 0
     iter_idx = -1  # make counter start at zero
     best_val_acc1 = 0  # to check if best validation accuracy
     # Prepare checkpoint file and model file to save and load from
-    checkpoint_file = os.path.join(config.save_dir, "checkpoint_adp_qtz.pth")
-    bestmodel_file = os.path.join(config.save_dir, "bestmodel_adp_qtz.pth")
+    checkpoint_file = os.path.join(config.save_dir, "checkpoint_adp_qtz_basicblock_baseline.pth")
+    bestmodel_file = os.path.join(config.save_dir, "bestmodel_adp_qtz_basicblock_baseline.pth")
 
     # Check for existing training results. If it existst, and the configuration
     # is set to resume `config.resume==True`, resume from previous training. If
@@ -219,20 +200,17 @@ def train(config):
             # Resume model
             model.load_state_dict(load_res["model"])
             # Resume optimizer
-            optimizer_param.load_state_dict(load_res["optimizer_param"])
-            optimizer_q.load_state_dict(load_res["optimizer_q"])
+            optimizer.load_state_dict(load_res["optimizer"])
         else:
             os.remove(checkpoint_file)
 
     # Training loop
     for epoch in tqdm(range(start_epoch, config.num_epoch)):
-        # print("adp_qtz_epoch: ", epoch)
-        if epoch == 20:
-            optimizer_param.param_groups[0]['lr'] /= 10
-            optimizer_q.param_groups[0]['lr'] /= 10
+        # print("adp_qtz_basicblock_baseline_epoch: ", epoch)
+        if epoch == 30:
+            optimizer.param_groups[0]['lr'] /= 10
 
         for x, y in train_loader:
-            # print("adp_qtz_iter_idx: ", iter_idx)
             iter_idx += 1  # Counter
             # Send data to GPU if we have one
             if torch.cuda.is_available():
@@ -240,19 +218,15 @@ def train(config):
             # Apply the model to obtain scores (forward pass)
             logits = model.forward(x)
             # Compute the loss
-            loss = criterion(logits, y) + \
-                   config.sharp * entropy_loss(config, model) + config.weight_decay * model_loss(config, model)
+            loss = criterion(logits, y) + config.weight_decay * model_loss(config, model)
             # Compute gradients
             loss.backward()
-            optimizer_param.step()
-            optimizer_q.step()
+            optimizer.step()
             # Zero the parameter gradients
-            optimizer_param.zero_grad()
-            optimizer_q.zero_grad()
+            optimizer.zero_grad()
 
             # Monitor results every report interval
             if iter_idx % config.rep_intv == 0:
-                # print('adp_qtz_iter_idx: ', iter_idx)
                 # compute accuracies
                 acc1, acc5 = accuracy(logits, y, topk=(1, 5))
                 # Write loss and accuracy to tensorboard, using keywords `loss` and `accuracy`.
@@ -265,8 +239,7 @@ def train(config):
                     "iter_idx": iter_idx,
                     "best_val_acc1": best_val_acc1,
                     "model": model.state_dict(),
-                    "optimizer_param": optimizer_param.state_dict(),
-                    "optimizer_q": optimizer_q.state_dict()
+                    "optimizer": optimizer.state_dict()
                 }, checkpoint_file)
 
             # Validate results every validation interval
@@ -286,8 +259,7 @@ def train(config):
                         # Compute logits
                         logits = model.forward(x)
                         # Compute loss and store as numpy
-                        loss = criterion(logits, y) + \
-                               config.sharp * entropy_loss(config, model) + config.weight_decay * model_loss(config, model)
+                        loss = criterion(logits, y) + config.weight_decay * model_loss(config, model)
                         # print(torch.cuda.is_available())
                         val_loss += [loss.cpu()]
                         # Compute accuracy and store as numpy
@@ -312,11 +284,10 @@ def train(config):
                         "iter_idx": iter_idx,
                         "best_val_acc1": best_val_acc1,
                         "model": model.state_dict(),
-                        "optimizer_param": optimizer_param.state_dict(),
-                        "optimizer_q": optimizer_q.state_dict()
+                        "optimizer": optimizer.state_dict()
                     }, bestmodel_file)
 
-    print("adp_qtz_best_val_acc1: ", best_val_acc1)
+    print("adp_qtz_basicblock_baseline_best_val_acc1: ", best_val_acc1)
 
 
 def test(config):
@@ -331,7 +302,7 @@ def test(config):
         shuffle=False)
 
     # Create model
-    model = ResNet(config, PreActBlock, [2, 2, 2, 2], num_classes=10)
+    model = ResNet(config, BasicBlock, [2, 2, 2, 2], num_classes=10)
     print('\nmodel created')
     # Move model to gpu if cuda is available
     if torch.cuda.is_available():
@@ -345,7 +316,7 @@ def test(config):
         criterion = criterion.cuda()
 
     # Load our best model and set model for testing
-    bestmodel_file = os.path.join(config.save_dir, "bestmodel_adp_qtz.pth")
+    bestmodel_file = os.path.join(config.save_dir, "bestmodel_adp_qtz_basicblock_baseline.pth")
     load_res = torch.load(
         bestmodel_file,
         map_location="cpu")
@@ -367,8 +338,7 @@ def test(config):
             # Compute logits
             logits = model.forward(x)
             # Compute loss and store as numpy
-            loss = criterion(logits, y) + \
-                   config.sharp * entropy_loss(config, model) + config.weight_decay * model_loss(config, model)
+            loss = criterion(logits, y) + config.weight_decay * model_loss(config, model)
             # print(torch.cuda.is_available())
             test_loss += [loss.cpu()]
             # Compute accuracy and store as numpy
@@ -381,8 +351,8 @@ def test(config):
     test_acc5_avg = np.mean(test_acc5)
 
     # Report Test loss and accuracy
-    print("adp_qtz_test_loss: ", test_loss_avg)
-    print("adp_qtz_test_acc1: ", test_acc1_avg)
+    print("adp_qtz_basicblock_baseline_test_loss: ", test_loss_avg)
+    print("adp_qtz_basicblock_baseline_test_acc1: ", test_acc1_avg)
 
 
 def unpickle(file_name):
@@ -468,36 +438,17 @@ class MyConv2d(nn.Module):
         super(MyConv2d, self).__init__()
         # Our custom convolution kernel. We'll initialize it using Kaiming He's
         # initialization with uniform distribution
-        self.p_w = nn.Parameter(
-            torch.rand((outchannel, inchannel, ksize, ksize, 4)),
-            requires_grad=True)  # primary weights
-        self.q_level = nn.Parameter(
-            torch.tensor([-2, -0.05, 0.05, 2], dtype=torch.float32),
-            requires_grad=True)  # quantization levels
+        self.weight = nn.Parameter(
+            torch.randn((outchannel, inchannel, ksize, ksize)),
+            requires_grad=True)
         # self.bias = nn.Parameter(
         #     torch.randn((outchannel,)),
         #     requires_grad=True)
         self.ksize = ksize
         self.stride = stride
         self.padding = padding
-        self.beta = config.beta
-        self.gamma = config.gamma
-        self.mode = config.mode
 
     def forward(self, x):
-        p_w_norm = torch.sqrt(torch.sum(self.p_w**2, dim=-1, keepdim=True))
-        p_w_normal = self.p_w / p_w_norm
-        s_w = torch.exp(self.beta * p_w_normal) / \
-            torch.sum(torch.exp(self.beta * p_w_normal), dim=-1, keepdim=True)  # the secondary weights
-        # s_w = t ** self.gamma / \
-        #     torch.sum(t ** self.gamma, dim=-1, keepdim=True)  # the secondary weights
-        if self.mode == 'train':
-            c_w = torch.matmul(s_w, self.q_level)  # the conv layer's weights
-        elif self.mode == 'test':
-            _, idx = torch.max(s_w, dim=-1)
-            c_w = torch.index_select(self.q_level, -1, idx.reshape(-1)).reshape(*idx.size())  # the conv layer's weights
-        else:
-            raise ValueError("Unknown run mode \"{}\"".format(config.mode))
         assert(len(x.shape) == 4)
         pad = nn.ZeroPad2d(padding=self.padding)
         x = pad(x)
@@ -514,11 +465,11 @@ class MyConv2d(nn.Module):
                 # Make matrix multiplication ready
                 cur_x = cur_x.reshape(x.shape[0], x.shape[1], h_n * w_n)
                 # Get the current multiplication kernel
-                cur_w = c_w[:, :, _j, _i]
+                cur_w = self.weight[:, :, _j, _i]
                 # Left multiply
                 cur_o = torch.matmul(cur_w, cur_x)
                 # Return to original shape
-                cur_o = cur_o.reshape(x.shape[0], c_w.shape[0], h_n, w_n)
+                cur_o = cur_o.reshape(x.shape[0], self.weight.shape[0], h_n, w_n)
                 # Cumulative sum
                 if x_out is None:
                     x_out = cur_o
@@ -529,27 +480,27 @@ class MyConv2d(nn.Module):
         return x_out
 
 
-class PreActBlock(nn.Module):
+class BasicBlock(nn.Module):
     expansion = 1
 
     def __init__(self, config, in_planes, planes, stride=1):
-        super(PreActBlock, self).__init__()
-        self.bn1 = nn.BatchNorm2d(in_planes)
+        super(BasicBlock, self).__init__()
         self.conv1 = MyConv2d(config, in_planes, planes, ksize=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = MyConv2d(config, in_planes, planes, ksize=3, stride=stride, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(planes)
-        self.conv2 = MyConv2d(config, planes, planes, ksize=3, stride=1, padding=1, bias=False)
 
         self.shortcut = nn.Sequential()
         if stride != 1 or in_planes != self.expansion*planes:
             self.shortcut = nn.Sequential(
-                nn.Conv2d(in_planes, self.expansion*planes, kernel_size=1, stride=stride, bias=False))
+                nn.Conv2d(in_planes, self.expansion*planes, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion*planes))
 
     def forward(self, x):
-        out = F.relu(self.bn1(x))
-        shortcut = self.shortcut(out)
-        out = self.conv1(out)
-        out = self.conv2(F.relu(self.bn2(out)))
-        out += shortcut
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
         return out
 
 
@@ -565,6 +516,7 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
         self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.linear = nn.Linear(512*block.expansion, num_classes)
 
     def _make_layer(self, block, planes, num_blocks, stride):
@@ -581,7 +533,7 @@ class ResNet(nn.Module):
         out = self.layer2(out)
         out = self.layer3(out)
         out = self.layer4(out)
-        out = F.avg_pool2d(out, 4)
+        out = self.avgpool(out)
         out = out.view(out.size(0), -1)
         out = self.linear(out)
         return out
@@ -589,38 +541,9 @@ class ResNet(nn.Module):
 
 def model_loss(config, model):
     loss = 0
-    p_w = None
     for name, param in model.named_parameters():
         if "weight" in name:
             loss += torch.sum(param**2)
-        if 'p_w' in name:
-            p_w = param
-        if 'q_level' in name:
-            q_level = param
-            p_w_norm = torch.sqrt(torch.sum(p_w ** 2, dim=-1, keepdim=True))
-            p_w_normal = p_w / p_w_norm
-            s_w = torch.exp(config.beta * p_w_normal) / \
-                torch.sum(torch.exp(config.beta * p_w_normal), dim=-1, keepdim=True)  # the secondary weights
-            # s_w = t ** config.gamma / \
-            #       torch.sum(t ** config.gamma, dim=-1, keepdim=True)  # the secondary weights
-            c_w = torch.matmul(s_w, q_level)  # the conv layer's weights
-            loss += torch.sum(c_w ** 2)
-
-    return loss
-
-
-def entropy_loss(config, model):
-    loss = 0
-    for name, param in model.named_parameters():
-        if 'p_w' in name:
-            p_w = param
-            p_w_norm = torch.sqrt(torch.sum(p_w ** 2, dim=-1, keepdim=True))
-            p_w_normal = p_w / p_w_norm
-            s_w = torch.exp(config.beta * p_w_normal) / \
-                torch.sum(torch.exp(config.beta * p_w_normal), dim=-1, keepdim=True)  # the secondary weights
-            # s_w = t ** config.gamma / \
-            #       torch.sum(t ** config.gamma, dim=-1, keepdim=True)  # the secondary weights
-            loss -= torch.sum(s_w * torch.log(s_w))
 
     return loss
 
