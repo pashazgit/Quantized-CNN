@@ -98,7 +98,7 @@ parser.add_argument("--weight_decay", type=float,
                     help="L2 Regularization strength")
 
 parser.add_argument("--resume", type=str2bool,
-                    default=False,
+                    default=True,
                     help="Whether to resume training from existing checkpoint")
 
 
@@ -302,7 +302,7 @@ def test(config):
         shuffle=False)
 
     # Create model
-    model = ResNet(config, BasicBlock, [2, 2, 2, 2], num_classes=10)
+    model = ResNet(BasicBlock, [2, 2, 2, 2], num_classes=10)
     print('\nmodel created')
     # Move model to gpu if cuda is available
     if torch.cuda.is_available():
