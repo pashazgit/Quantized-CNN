@@ -193,7 +193,7 @@ def train(config):
     # Initialize training
     start_epoch = 0
     iter_idx = -1  # make counter start at zero
-    best_val_acc1 = 0  # to check if best validation accuracy
+    best_val_acc = 0  # to check if best validation accuracy
     # Prepare checkpoint file and model file to save and load from
     checkpoint_file = os.path.join(config.save_dir, "checkpoint_adp_qtz_basicblock.pth")
     bestmodel_file = os.path.join(config.save_dir, "bestmodel_adp_qtz_basicblock.pth")
@@ -216,7 +216,7 @@ def train(config):
             # Resume iterations
             iter_idx = load_res["iter_idx"]
             # Resume best va result
-            best_val_acc1 = load_res["best_val_acc1"]
+            best_val_acc = load_res["best_val_acc"]
             # Resume model
             model.load_state_dict(load_res["model"])
             # Resume optimizer
@@ -252,17 +252,19 @@ def train(config):
 
             # Monitor results every report interval
             if iter_idx % config.rep_intv == 0:
-                # compute accuracies
-                acc1, acc5 = accuracy(logits, y, topk=(1, 5))
+                # Compute accuracy (No gradients required). We'll wrapp this
+                # part so that we prevent torch from computing gradients.
+                with torch.no_grad():
+                    pred = torch.argmax(logits, dim=1)
+                    acc = torch.mean(torch.eq(pred, y).float()) * 100.0
                 # Write loss and accuracy to tensorboard, using keywords `loss` and `accuracy`.
                 train_writer.add_scalar("loss", loss, global_step=iter_idx)
-                train_writer.add_scalar("top1 accuracy", acc1, global_step=iter_idx)
-                train_writer.add_scalar("top5 accuracy", acc5, global_step=iter_idx)
+                train_writer.add_scalar("accuracy", acc, global_step=iter_idx)
                 # Save
                 torch.save({
                     "epoch": epoch,
                     "iter_idx": iter_idx,
-                    "best_val_acc1": best_val_acc1,
+                    "best_val_acc": best_val_acc,
                     "model": model.state_dict(),
                     "optimizer_param": optimizer_param.state_dict(),
                     "optimizer_q": optimizer_q.state_dict()
@@ -274,8 +276,7 @@ def train(config):
                 model.eval()
                 # List to contain all losses and accuracies for all the val batches
                 val_loss = []
-                val_acc1 = []
-                val_acc5 = []
+                val_acc = []
                 for x, y in val_loader:
                     # Send data to GPU if we have one
                     if torch.cuda.is_available():
@@ -290,26 +291,24 @@ def train(config):
                         # print(torch.cuda.is_available())
                         val_loss += [loss.data.cpu()]  # loss is a tensor with one element of type torch.float32
                         # Compute accuracy and store as numpy
-                        acc1, acc5 = accuracy(logits, y, topk=(1, 5))
-                        val_acc1 += [acc1.data.cpu()]  # acc1 is a tensor with one element of type float32
-                        val_acc5 += [acc5.data.cpu()]  # acc5 is a tensor with one element of type float32
+                        pred = torch.argmax(logits, dim=1)
+                        acc = torch.mean(torch.eq(pred, y).float()) * 100.0
+                        val_acc += [acc.cpu().numpy()]
                 # Take average
                 val_loss_avg = np.mean(val_loss)
-                val_acc1_avg = np.mean(val_acc1)
-                val_acc5_avg = np.mean(val_acc5)
+                val_acc_avg = np.mean(val_acc)
                 # Write loss and accuracy to tensorboard, using keywords `loss` and `accuracy`.
                 val_writer.add_scalar("loss", val_loss_avg, global_step=iter_idx)
-                val_writer.add_scalar("top1 accuracy", val_acc1_avg, global_step=iter_idx)
-                val_writer.add_scalar("top5 accuracy", val_acc5_avg, global_step=iter_idx)
+                val_writer.add_scalar("accuracy", val_acc_avg, global_step=iter_idx)
                 # Set model back for training
                 model.train()
-                if val_acc1_avg > best_val_acc1:
-                    best_val_acc1 = val_acc1_avg
+                if val_acc_avg > best_val_acc:
+                    best_val_acc = val_acc_avg
                     # Save
                     torch.save({
                         "epoch": epoch,
                         "iter_idx": iter_idx,
-                        "best_val_acc1": best_val_acc1,
+                        "best_val_acc": best_val_acc,
                         "model": model.state_dict(),
                         "optimizer_param": optimizer_param.state_dict(),
                         "optimizer_q": optimizer_q.state_dict()
@@ -317,7 +316,7 @@ def train(config):
 
                 display_entropy(model, iter_idx)
 
-    print("adp_qtz_basicblock_best_val_acc1: ", best_val_acc1)
+    print("adp_qtz_basicblock_best_val_acc: ", best_val_acc)
 
 
 def test(config):
@@ -357,8 +356,7 @@ def test(config):
     prefix = "Testing: "
     # List to contain all losses and accuracies for all the val batches
     test_loss = []
-    test_acc1 = []
-    test_acc5 = []
+    test_acc = []
     for x, y in tqdm(test_loader, desc=prefix):
         # Send data to GPU if we have one
         if torch.cuda.is_available():
@@ -373,17 +371,16 @@ def test(config):
             # print(torch.cuda.is_available())
             test_loss += [loss.data.cpu()]
             # Compute accuracy and store as numpy
-            acc1, acc5 = accuracy(logits, y, topk=(1, 5))
-            test_acc1 += [acc1.data.cpu()]
-            test_acc5 += [acc5.data.cpu()]
+            pred = torch.argmax(logits, dim=1)
+            acc = torch.mean(torch.eq(pred, y).float()) * 100.0
+            test_acc += [acc.cpu().numpy()]
     # Take average
     test_loss_avg = np.mean(test_loss)
-    test_acc1_avg = np.mean(test_acc1)
-    test_acc5_avg = np.mean(test_acc5)
+    test_acc_avg = np.mean(test_acc)
 
     # Report Test loss and accuracy
     print("adp_qtz_basicblock_test_loss: ", test_loss_avg)
-    print("adp_qtz_basicblock_test_acc1: ", test_acc1_avg)
+    print("adp_qtz_basicblock_test_acc: ", test_acc_avg)
 
 
 def unpickle(file_name):
@@ -536,19 +533,19 @@ class BasicBlock(nn.Module):
     def __init__(self, config, in_planes, planes, stride=1):
         super(BasicBlock, self).__init__()
         self.conv1 = MyConv2d(config, in_planes, planes, ksize=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
+        self.gn1 = nn.GroupNorm(num_groups=32, num_channels=planes)
         self.conv2 = MyConv2d(config, planes, planes, ksize=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
+        self.gn2 = nn.GroupNorm(num_groups=32, num_channels=planes)
 
         self.shortcut = nn.Sequential()
         if stride != 1 or in_planes != self.expansion*planes:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_planes, self.expansion*planes, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(self.expansion*planes))
+                nn.GroupNorm(num_groups=32, num_channels=self.expansion*planes))
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
+        out = F.relu(self.gn1(self.conv1(x)))
+        out = self.gn2(self.conv2(out))
         out += self.shortcut(x)
         out = F.relu(out)
         return out
@@ -561,7 +558,7 @@ class ResNet(nn.Module):
         self.in_planes = 64
         self.config = config
         self.conv1 = MyConv2d(config, inchannel=3, outchannel=64, ksize=3, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
+        self.gn1 = nn.GroupNorm(num_groups=32, num_channels=64)
         self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
@@ -578,7 +575,7 @@ class ResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
+        out = F.relu(self.gn1(self.conv1(x)))
         out = self.layer1(out)
         out = self.layer2(out)
         out = self.layer3(out)
@@ -646,21 +643,6 @@ def display_entropy(model, iter_idx):
     fig = plt.figure()
     plt.hist(e.detach().numpy())
     fig.savefig('/home/pasha/scratch/adaptive_quantization/jobs/output/entropy{}.png'.format(iter_idx))
-
-
-def accuracy(output, target, topk=(1,)):
-    """Computes the accuracy over the k top predictions for the specified values of k"""
-    res = []
-    with torch.no_grad():
-        maxk = max(topk)
-        batch_size = output.size(0)
-        pred = output.topk(maxk, 1, largest=True, sorted=True)[1]
-        correct = pred.eq(target.unsqueeze(dim=1).expand_as(pred)).t()
-        for k in topk:
-            correct_k = correct[:k].float().sum().mul_(100.0 / batch_size)
-            res.append(correct_k)
-
-    return res
 
 
 if __name__ == "__main__":
