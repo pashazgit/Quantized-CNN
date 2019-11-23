@@ -23,6 +23,7 @@ from torchvision import transforms
 import h5py
 import torch.nn.functional as F
 import pickle
+from PIL import Image
 
 
 # ----------------------------------------
@@ -74,26 +75,26 @@ parser.add_argument("--log_dir", type=str,
 #                     help="Directory to save logs and current model")
 
 parser.add_argument("--learning_rate", type=float,
-                    default=1e-3,
+                    default=1e-1,
                     help="Learning rate (gradient step size)")
 
 parser.add_argument("--batch_size", type=int,
-                    default=100,
+                    default=128,
                     help="Size of each training batch")
 
 parser.add_argument("--num_epoch", type=int,
-                    default=90,
+                    default=400,
                     help="Number of epochs to train")
 
 parser.add_argument("--val_intv", type=int,
-                    default=400,
+                    default=350,
                     help="Validation interval")
 
 parser.add_argument("--rep_intv", type=int,
-                    default=400,
+                    default=350,
                     help="Report interval")
 
-parser.add_argument("--weight_decay", type=float,
+parser.add_argument("--l2_reg", type=float,
                     default=1e-4,
                     help="L2 Regularization strength")
 
@@ -123,11 +124,21 @@ def main(config):
 def train(config):
     # CUDA_LAUNCH_BLOCKING = 1
 
+    transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize((0.4915, 0.4821, 0.4462), (0.2472, 0.2437, 0.2617)),
+    ])
+
+    transform_valid = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4915, 0.4821, 0.4462), (0.2472, 0.2437, 0.2617)),
+    ])
+
     # Initialize datasets for both training and validation
-    train_data = CIFAR10Dataset(
-        config.data_dir, mode="train")
-    val_data = CIFAR10Dataset(
-        config.data_dir, mode="valid")
+    train_data = CIFAR10Dataset(config.data_dir, mode="train", transform=transform_train)
+    val_data = CIFAR10Dataset(config.data_dir, mode="valid", transform=transform_valid)
     # Create data loader for training and validation.
     train_loader = DataLoader(
         dataset=train_data,
@@ -136,12 +147,12 @@ def train(config):
         shuffle=True)
     val_loader = DataLoader(
         dataset=val_data,
-        batch_size=config.batch_size,
+        batch_size=100,
         num_workers=2,
         shuffle=False)
 
-    # Create model instance.
-    model = ResNet(BasicBlock, [2, 2, 2, 2], num_classes=10)
+    # Create model instance (ResNet20)
+    model = ResNet(3)
     print('\nmodel created')
     # Move model to gpu if cuda is available
     if torch.cuda.is_available():
@@ -156,7 +167,8 @@ def train(config):
         criterion = criterion.cuda()
 
     # create optimizer
-    optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
+    # optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
+    optimizer = optim.SGD(model.parameters(), lr=config.learning_rate, momentum=0.9)
 
     # Create log directory and save directory if it does not exist
     if not os.path.exists(config.log_dir):
@@ -207,8 +219,15 @@ def train(config):
     # Training loop
     for epoch in tqdm(range(start_epoch, config.num_epoch)):
         # print("adp_qtz_basicblock_baseline_epoch: ", epoch)
-        if epoch == 30:
-            optimizer.param_groups[0]['lr'] /= 10
+        if epoch == 81:
+            optimizer.param_groups[0]['lr'] = 0.01
+            print('learning_rate: ', optimizer.param_groups[0]['lr'])
+        elif epoch ==122:
+            optimizer.param_groups[0]['lr'] = 0.001
+            print('learning_rate: ', optimizer.param_groups[0]['lr'])
+        elif epoch == 299:
+            optimizer.param_groups[0]['lr'] = 0.0002
+            print('learning_rate: ', optimizer.param_groups[0]['lr'])
 
         for x, y in train_loader:
             iter_idx += 1  # Counter
@@ -218,7 +237,7 @@ def train(config):
             # Apply the model to obtain scores (forward pass)
             logits = model.forward(x)
             # Compute the loss
-            loss = criterion(logits, y) + config.weight_decay * model_loss(config, model)
+            loss = criterion(logits, y) + model_loss(config, model)
             # Compute gradients
             loss.backward()
             optimizer.step()
@@ -260,7 +279,7 @@ def train(config):
                         # Compute logits
                         logits = model.forward(x)
                         # Compute loss and store as numpy
-                        loss = criterion(logits, y) + config.weight_decay * model_loss(config, model)
+                        loss = criterion(logits, y) + model_loss(config, model)
                         # print(torch.cuda.is_available())
                         val_loss += [loss.cpu().numpy()]
                         # Compute accuracy and store as numpy
@@ -290,18 +309,22 @@ def train(config):
 
 
 def test(config):
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4915, 0.4821, 0.4462), (0.2472, 0.2437, 0.2617)),
+    ])
+
     # Initialize Dataset for testing.
-    test_data = CIFAR10Dataset(
-        config, mode="test")
+    test_data = CIFAR10Dataset(config, mode="test", transform=transform_test)
     # Create data loader for the test dataset with two number of workers and no shuffling.
     test_loader = DataLoader(
         dataset=test_data,
-        batch_size=config.batch_size,
+        batch_size=100,
         num_workers=2,
         shuffle=False)
 
-    # Create model
-    model = ResNet(BasicBlock, [2, 2, 2, 2], num_classes=10)
+    # Create model instance (ResNet20)
+    model = ResNet(3)
     print('\nmodel created')
     # Move model to gpu if cuda is available
     if torch.cuda.is_available():
@@ -336,7 +359,7 @@ def test(config):
             # Compute logits
             logits = model.forward(x)
             # Compute loss and store as numpy
-            loss = criterion(logits, y) + config.weight_decay * model_loss(config, model)
+            loss = criterion(logits, y) + model_loss(config, model)
             # print(torch.cuda.is_available())
             test_loss += [loss.cpu().numpy()]
             # Compute accuracy and store as numpy
@@ -365,12 +388,15 @@ def load_data(data_dir, data_type):
         for _i in range(4):
             file_name = os.path.join(data_dir, "data_batch_{}".format(_i + 1))
             cur_dict = unpickle(file_name)
-            data += [
-                np.array(cur_dict[b"data"])
-            ]
-            label += [
-                np.array(cur_dict[b"labels"])
-            ]
+            data += [np.array(cur_dict[b"data"])]
+            label += [np.array(cur_dict[b"labels"])]
+        cur_dict = unpickle(os.path.join(data_dir, "data_batch_5"))
+        cur_dict_data = np.array(cur_dict[b"data"])
+        cur_dict_labels = np.array(cur_dict[b"labels"])
+        cur_dict_data_f = cur_dict_data[0:int(len(cur_dict_data) / 2)]
+        cur_dict_labels_f = cur_dict_labels[0:int(len(cur_dict_labels) / 2)]
+        data += [cur_dict_data_f]
+        label += [cur_dict_labels_f]
         # Concat them
         data = np.concatenate(data)
         label = np.concatenate(label)
@@ -381,15 +407,13 @@ def load_data(data_dir, data_type):
         # figure out the loss value you should aim to train for, and then stop
         # at that point, using the entire dataset. However, for simplicity,
         # we'll use this simple strategy.
-        data = []
-        label = []
         cur_dict = unpickle(os.path.join(data_dir, "data_batch_5"))
-        data = np.array(cur_dict[b"data"])
-        label = np.array(cur_dict[b"labels"])
+        cur_dict_data = np.array(cur_dict[b"data"])
+        cur_dict_labels = np.array(cur_dict[b"labels"])
+        data = cur_dict_data[int(len(cur_dict_data) / 2):]
+        label = cur_dict_labels[int(len(cur_dict_labels) / 2):]
 
     elif data_type == "test":
-        data = []
-        label = []
         cur_dict = unpickle(os.path.join(data_dir, "test_batch"))
         data = np.array(cur_dict[b"data"])
         label = np.array(cur_dict[b"labels"])
@@ -400,136 +424,123 @@ def load_data(data_dir, data_type):
     # Turn data into (NxCxHxW) format, so that we can easily process it, where
     # N=number of images, H=height, W=widht, C=channels. Note that this
     # is the default format for PyTorch.
-    data = np.reshape(data, (-1, 3, 32, 32))
+    data = np.transpose(np.reshape(data, (-1, 3, 32, 32)), (0, 2, 3, 1))
 
     return data, label
 
 
 class CIFAR10Dataset(Dataset):
-    def __init__(self, data_dir, mode):
+
+    def __init__(self, data_dir, mode, transform=None):
         print("Loading CIFAR10 Dataset from {} for {}ing ...".format(data_dir, mode), end="")
         # Load data (note that we now simply load the raw data.
         data, label = load_data(data_dir, mode)
         self.data = data
         self.label = label
-        self.sample_shp = data.shape[1:]
+        self.transform = transform
         print(" done.")
+
+    def __getitem__(self, index):
+        # Grab one data from the dataset and then apply our feature extraction
+        data_cur = self.data[index]
+        # doing this so that it is consistent with all other datasets to return a PIL Image
+        data_cur = Image.fromarray(data_cur)
+        # Make pytorch object
+        if self.transform is not None:
+            data_cur = self.transform(data_cur)
+        # Label is just the label
+        label_cur = self.label[index]
+        return data_cur, label_cur
 
     def __len__(self):
         # return the number of elements at `self.data`
         return len(self.data)
 
-    def __getitem__(self, index):
-        # Grab one data from the dataset and then apply our feature extraction
-        data_cur = self.data[index]
-        # Make pytorch object
-        data_cur = torch.from_numpy(data_cur.astype(np.float32))
-        # Label is just the label
-        label_cur = self.label[index]
-        return data_cur, label_cur
 
+class Residual(nn.Module):
 
-class MyConv2d(nn.Module):
+    def __init__(self, in_channel, increase_dim):
+        super(Residual, self).__init__()
+        if not increase_dim:
+            out_channel = in_channel
+            stride = 1
+        else:
+            out_channel = in_channel * 2
+            stride = 2
 
-    def __init__(self, inchannel, outchannel, ksize, stride, padding, bias=False):
-        super(MyConv2d, self).__init__()
-        # Our custom convolution kernel. We'll initialize it using Kaiming He's
-        # initialization with uniform distribution
-        self.weight = nn.Parameter(
-            torch.randn((outchannel, inchannel, ksize, ksize)),
-            requires_grad=True)
-        # self.bias = nn.Parameter(
-        #     torch.randn((outchannel,)),
-        #     requires_grad=True)
-        self.ksize = ksize
-        self.stride = stride
-        self.padding = padding
+        self.bn1 = nn.BatchNorm2d(in_channel)
+        self.conv1 = nn.Conv2d(in_channel, out_channel, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channel)
+        self.conv2 = nn.Conv2d(out_channel, out_channel, kernel_size=3, stride=1, padding=1, bias=False)
 
-    def forward(self, x):
-        assert(len(x.shape) == 4)
-        pad = nn.ZeroPad2d(padding=self.padding)
-        x = pad(x)
-        x_out = None
-        h, w = x.shape[-2:]
-        h = h - self.ksize + 1
-        w = w - self.ksize + 1
-        for _i in range(self.ksize):
-            for _j in range(self.ksize):
-                # Get the region that we will apply for this part of the convolution kernel
-                cur_x = x[:, :, range(_j, _j + h, self.stride), :][:, :, :, range(_i, _i + w, self.stride)]
-                h_n = cur_x.shape[2]
-                w_n = cur_x.shape[3]
-                # Make matrix multiplication ready
-                cur_x = cur_x.reshape(x.shape[0], x.shape[1], h_n * w_n)
-                # Get the current multiplication kernel
-                cur_w = self.weight[:, :, _j, _i]
-                # Left multiply
-                cur_o = torch.matmul(cur_w, cur_x)
-                # Return to original shape
-                cur_o = cur_o.reshape(x.shape[0], self.weight.shape[0], h_n, w_n)
-                # Cumulative sum
-                if x_out is None:
-                    x_out = cur_o
-                else:
-                    x_out += cur_o
-        # # Add bias
-        # x_out += self.bias.view(1, self.bias.shape[0], 1, 1)
-        return x_out
-
-
-class BasicBlock(nn.Module):
-    expansion = 1
-
-    def __init__(self, in_planes, planes, stride=1):
-        super(BasicBlock, self).__init__()
-        self.conv1 = MyConv2d(in_planes, planes, ksize=3, stride=stride, padding=1, bias=False)
-        self.gn1 = nn.GroupNorm(num_groups=32, num_channels=planes)
-        self.conv2 = MyConv2d(planes, planes, ksize=3, stride=1, padding=1, bias=False)
-        self.gn2 = nn.GroupNorm(num_groups=32, num_channels=planes)
-
-        self.shortcut = nn.Sequential()
-        if stride != 1 or in_planes != self.expansion*planes:
+        if not increase_dim:
+            self.shortcut = nn.Identity()
+        else:
             self.shortcut = nn.Sequential(
-                nn.Conv2d(in_planes, self.expansion*planes, kernel_size=1, stride=stride, bias=False),
-                nn.GroupNorm(num_groups=32, num_channels=self.expansion*planes))
+                nn.AvgPool2d(2),
+                nn.ZeroPad2d((0, 0, 0, 0, in_channel//2, in_channel//2)))
 
     def forward(self, x):
-        out = F.relu(self.gn1(self.conv1(x)))
-        out = self.gn2(self.conv2(out))
+        out = F.relu(self.bn1(x))
+        out = F.relu(self.bn2(self.conv1(out)))
+        out = self.conv2(out)
         out += self.shortcut(x)
-        out = F.relu(out)
+        return out
+
+
+class PreResidual(nn.Module):
+
+    def __init__(self, in_channel, increase_dim=False):
+        super(PreResidual, self).__init__()
+        out_channel = in_channel
+        self.conv1 = nn.Conv2d(in_channel, out_channel, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channel)
+        self.conv2 = nn.Conv2d(out_channel, out_channel, kernel_size=3, stride=1, padding=1, bias=False)
+
+    def forward(self, x):
+        out = F.relu(self.bn2(self.conv1(x)))
+        out = (self.conv2(out))
+        out += x
         return out
 
 
 class ResNet(nn.Module):
 
-    def __init__(self, block, num_blocks, num_classes):
+    def __init__(self, n):
         super(ResNet, self).__init__()
-        self.in_planes = 64
-        self.conv1 = MyConv2d(inchannel=3, outchannel=64, ksize=3, stride=1, padding=1, bias=False)
-        self.gn1 = nn.GroupNorm(num_groups=32, num_channels=64)
-        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
-        self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.linear = nn.Linear(512*block.expansion, num_classes)
+        self.conv0 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn0 = nn.BatchNorm2d(16)
+        self.layer1 = self._make_layer(n, in_plane=16, first=True)
+        # 32, c = 16
+        self.layer2 = self._make_layer(n, in_plane=16, first=False)
+        # 16, c = 32
+        self.layer3 = self._make_layer(n, in_plane=32, first=False)
+        # 8, c = 64
+        self.bnlast = nn.BatchNorm2d(64)
+        self.ap = nn.AvgPool2d(8)
+        self.linear = nn.Linear(64, 10)
 
-    def _make_layer(self, block, planes, num_blocks, stride):
-        strides = [stride] + [1]*(num_blocks-1)
+    def _make_layer(self, n, in_plane, first):
         layers = []
-        for stride in strides:
-            layers.append(block(self.in_planes, planes, stride))
-            self.in_planes = planes * block.expansion
+
+        if not first:
+            layers.append(Residual(in_channel=in_plane, increase_dim=True))
+            in_plane *= 2
+        else:
+            layers.append(PreResidual(in_channel=in_plane, increase_dim=False))
+
+        for k in range(1, n):
+            layers.append(Residual(in_channel=in_plane, increase_dim=False))
+
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        out = F.relu(self.gn1(self.conv1(x)))
+        out = F.relu(self.bn0(self.conv0(x)))
         out = self.layer1(out)
         out = self.layer2(out)
         out = self.layer3(out)
-        out = self.layer4(out)
-        out = self.avgpool(out)
+        out = F.relu(self.bnlast(out))
+        out = self.ap(out)
         out = out.view(out.size(0), -1)
         out = self.linear(out)
         return out
@@ -541,7 +552,7 @@ def model_loss(config, model):
         if "weight" in name:
             loss += torch.sum(param**2)
 
-    return loss
+    return loss * config.l2_reg
 
 
 if __name__ == "__main__":
