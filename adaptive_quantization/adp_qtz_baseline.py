@@ -95,7 +95,7 @@ parser.add_argument("--rep_intv", type=int,
                     help="Report interval")
 
 parser.add_argument("--l2_reg", type=float,
-                    default=1e-4,
+                    default=5e-4,
                     help="L2 Regularization strength")
 
 parser.add_argument("--resume", type=str2bool,
@@ -139,6 +139,7 @@ def train(config):
     # Initialize datasets for both training and validation
     train_data = CIFAR10Dataset(config.data_dir, mode="train", transform=transform_train)
     val_data = CIFAR10Dataset(config.data_dir, mode="valid", transform=transform_valid)
+
     # Create data loader for training and validation.
     train_loader = DataLoader(
         dataset=train_data,
@@ -178,17 +179,17 @@ def train(config):
 
     # Create summary writer
     train_writer = SummaryWriter(
-        log_dir=os.path.join(config.log_dir, "train_adp_qtz_basicblock_baseline"))
+        log_dir=os.path.join(config.log_dir, "train_adp_qtz_baseline"))
     val_writer = SummaryWriter(
-        log_dir=os.path.join(config.log_dir, "valid_adp_qtz_basicblock_baseline"))
+        log_dir=os.path.join(config.log_dir, "valid_adp_qtz_baseline"))
 
     # Initialize training
     start_epoch = 0
     iter_idx = -1  # make counter start at zero
     best_val_acc = 0  # to check if best validation accuracy
     # Prepare checkpoint file and model file to save and load from
-    checkpoint_file = os.path.join(config.save_dir, "checkpoint_adp_qtz_basicblock_baseline.pth")
-    bestmodel_file = os.path.join(config.save_dir, "bestmodel_adp_qtz_basicblock_baseline.pth")
+    checkpoint_file = os.path.join(config.save_dir, "checkpoint_adp_qtz_baseline.pth")
+    bestmodel_file = os.path.join(config.save_dir, "bestmodel_adp_qtz_baseline.pth")
 
     # Check for existing training results. If it existst, and the configuration
     # is set to resume `config.resume==True`, resume from previous training. If
@@ -218,7 +219,7 @@ def train(config):
 
     # Training loop
     for epoch in tqdm(range(start_epoch, config.num_epoch)):
-        # print("adp_qtz_basicblock_baseline_epoch: ", epoch)
+        # print("adp_qtz_baseline_epoch: ", epoch)
         if epoch == 81:
             optimizer.param_groups[0]['lr'] = 0.01
             print('learning_rate: ', optimizer.param_groups[0]['lr'])
@@ -305,7 +306,7 @@ def train(config):
                         "optimizer": optimizer.state_dict()
                     }, bestmodel_file)
 
-    print("adp_qtz_basicblock_baseline_best_val_accuracy: ", best_val_acc)
+    print("adp_qtz_baseline_best_val_accuracy: ", best_val_acc)
 
 
 def test(config):
@@ -315,8 +316,9 @@ def test(config):
     ])
 
     # Initialize Dataset for testing.
-    test_data = CIFAR10Dataset(config, mode="test", transform=transform_test)
+    test_data = CIFAR10Dataset(config.data_dir, mode="test", transform=transform_test)
     # Create data loader for the test dataset with two number of workers and no shuffling.
+
     test_loader = DataLoader(
         dataset=test_data,
         batch_size=100,
@@ -338,7 +340,7 @@ def test(config):
         criterion = criterion.cuda()
 
     # Load our best model and set model for testing
-    bestmodel_file = os.path.join(config.save_dir, "bestmodel_adp_qtz_basicblock_baseline.pth")
+    bestmodel_file = os.path.join(config.save_dir, "bestmodel_adp_qtz_baseline.pth")
     load_res = torch.load(
         bestmodel_file,
         map_location="cpu")
@@ -371,8 +373,8 @@ def test(config):
     test_acc_avg = np.mean(test_acc)
 
     # Report Test loss and accuracy
-    print("adp_qtz_basicblock_baseline_test_loss: ", test_loss_avg)
-    print("adp_qtz_basicblock_baseline_test_accuracy: ", test_acc_avg)
+    print("adp_qtz_baseline_test_loss: ", test_loss_avg)
+    print("adp_qtz_baseline_test_accuracy: ", test_acc_avg)
 
 
 def unpickle(file_name):
