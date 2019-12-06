@@ -60,22 +60,26 @@ parser.add_argument("--data_dir", type=str,
                     help="")
 
 parser.add_argument("--save_dir", type=str,
-                    default="/home/pasha/scratch/adaptive_quantization/jobs/output/saves/fan",
+                    default="/home/pasha/scratch/jobs/output/adp_qtz/fan/save",
                     help="Directory to save the best model")
 
 parser.add_argument("--log_dir", type=str,
-                    default="/home/pasha/scratch/adaptive_quantization/jobs/output/logs/fan",
+                    default="/home/pasha/scratch/jobs/output/adp_qtz/fan/logs",
                     help="Directory to save logs and current model")
 
-parser.add_argument("--plt_dir", type=str,
-                    default="/home/pasha/scratch/adaptive_quantization/jobs/output/plts/fan",
-                    help="Directory to save logs and current model")
+# parser.add_argument("--plt_dir", type=str,
+#                     default="/home/pasha/scratch/adaptive_quantization/jobs/output/adp_qtz/fan/plts",
+#                     help="Directory to save logs and current model")
 
-parser.add_argument("--param_lr", type=float,
-                    default=1e-1,
-                    help="Learning rate (gradient step size)")
+parser.add_argument("--prim_lr", type=float,
+                    default=1e-2,
+                    help="Learning rate of prim coefficients (gradient step size)")
 
 parser.add_argument("--q_lr", type=float,
+                    default=1e-3,
+                    help="Learning rate of quantization levels (gradient step size)")
+
+parser.add_argument("--lr", type=float,
                     default=1e-2,
                     help="Learning rate (gradient step size)")
 
@@ -84,7 +88,7 @@ parser.add_argument("--batch_size", type=int,
                     help="Size of each training batch")
 
 parser.add_argument("--num_epoch", type=int,
-                    default=700,
+                    default=400,
                     help="Number of epochs to train")
 
 parser.add_argument("--val_intv", type=int,
@@ -99,14 +103,38 @@ parser.add_argument("--l2_reg", type=float,
                     default=5e-4,
                     help="L2 Regularization strength")
 
-parser.add_argument("--sharp", type=float,
-                    default=0,
-                    help="sharpening hyper_parameter")
+# parser.add_argument("--en_loss", type=float,
+#                     default=0,
+#                     help="sharpening hyper_parameter")
+
+parser.add_argument("--num_level_conv", type=int,
+                    default=32,
+                    help="number of quantization levels for conv layer")
+
+parser.add_argument("--num_level_fc", type=int,
+                    default=32,
+                    help="number of quantization levels for fc layer")
+
+parser.add_argument("--prim_init", type=str,
+                    default="uniform",
+                    choices=["uniform", "normal"],
+                    help="init mode of prim coefficients")
+
+parser.add_argument("--beta_list", type=str,
+                    default="[1, 2, 3, 4]",
+                    help="list of inc values of sharpening factor")
+
+parser.add_argument("--epoch_list", type=str,
+                       default="[0, 70, 140, 210, 300]",
+                       help="list of inc training epochs")
 
 parser.add_argument("--resume", type=str2bool,
                     default=True,
                     help="Whether to resume training from existing checkpoint")
 
+parser.add_argument("--name_idx", type=int,
+                    default=0,
+                    help="")
 
 def get_config():
     config, unparsed = parser.parse_known_args()
@@ -129,7 +157,9 @@ def main(config):
 def train(config):
     # CUDA_LAUNCH_BLOCKING = 1
 
-    global beta
+    global beta  # sharpening factor
+    beta_list = list(map(int, config.beta_list.strip('[]').split(',')))  # incremental betas
+    epoch_list = list(map(int, config.epoch_list.strip('[]').split(',')))  # incremental epochs
 
     transform_train = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
@@ -160,7 +190,7 @@ def train(config):
         shuffle=False)
 
     # Create model instance.
-    model = ResNet(3, 'train')
+    model = ResNet(config, 3)
     print('\nmodel created')
     # Move model to gpu if cuda is available
     if torch.cuda.is_available():
@@ -175,33 +205,35 @@ def train(config):
         criterion = criterion.cuda()
 
     # create optimizer
-    optimizer_param = optim.Adam([param for name, param in model.named_parameters() if 'q_level' not in name],
-                                 lr=config.param_lr)
+    optimizer_prim = optim.Adam([param for name, param in model.named_parameters() if 'p_c' in name],
+                                lr=config.prim_lr)
     optimizer_q = optim.Adam([param for name, param in model.named_parameters() if 'q_level' in name],
                              lr=config.q_lr)
+    optimizer = optim.Adam([param for name, param in model.named_parameters() if 'p_c' not in name and 'q_level' not in name],
+                           lr=config.lr)
 
     # Create log directory and save directory and plt directory if it does not exist
     if not os.path.exists(config.log_dir):
         os.makedirs(config.log_dir)
     if not os.path.exists(config.save_dir):
         os.makedirs(config.save_dir)
-    if not os.path.exists(config.plt_dir):
-        os.makedirs(config.plt_dir)
+    # if not os.path.exists(config.plt_dir):
+    #     os.makedirs(config.plt_dir)
 
     # Create summary writer
     train_writer = SummaryWriter(
-        log_dir=os.path.join(config.log_dir, "train_adp_qtz"))
+        log_dir=os.path.join(config.log_dir, "train_{}".format(config.name_idx)))
     val_writer = SummaryWriter(
-        log_dir=os.path.join(config.log_dir, "valid_adp_qtz"))
+        log_dir=os.path.join(config.log_dir, "valid_{}".format(config.name_idx)))
 
     # Initialize training
-    beta = 1
+    beta = beta_list[0]
     start_epoch = 0
     iter_idx = -1  # make counter start at zero
     best_val_acc = 0  # to check if best validation accuracy
     # Prepare checkpoint file and model file to save and load from
-    checkpoint_file = os.path.join(config.save_dir, "checkpoint_adp_qtz.pth")
-    bestmodel_file = os.path.join(config.save_dir, "bestmodel_adp_qtz.pth")
+    checkpoint_file = os.path.join(config.save_dir, "checkpoint_{}.path".format(config.name_idx))
+    bestmodel_file = os.path.join(config.save_dir, "bestmodel_{}.path".format(config.name_idx))
 
     # Check for existing training results. If it existst, and the configuration
     # is set to resume `config.resume==True`, resume from previous training. If
@@ -226,42 +258,24 @@ def train(config):
             # Resume model
             model.load_state_dict(load_res["model"])
             # Resume optimizer
-            optimizer_param.load_state_dict(load_res["optimizer_param"])
+            optimizer_prim.load_state_dict(load_res["optimizer_prim"])
             optimizer_q.load_state_dict(load_res["optimizer_q"])
+            optimizer.load_state_dict(load_res["optimizer"])
         else:
             os.remove(checkpoint_file)
 
     # Training loop
     for epoch in tqdm(range(start_epoch, config.num_epoch)):
-        if epoch == 70:
-            optimizer_param.param_groups[0]['lr'] = 0.01
-            optimizer_q.param_groups[0]['lr'] = 0.001
-        elif epoch == 110:
-            optimizer_param.param_groups[0]['lr'] = 0.001
-            optimizer_q.param_groups[0]['lr'] = 0.0001
-        elif epoch == 220:
-            beta = 2
-            optimizer_param.param_groups[0]['lr'] = 0.1
-            optimizer_q.param_groups[0]['lr'] = 0.01
-        elif epoch == 290:
-            optimizer_param.param_groups[0]['lr'] = 0.01
-            optimizer_q.param_groups[0]['lr'] = 0.001
-        elif epoch == 330:
-            optimizer_param.param_groups[0]['lr'] = 0.001
-            optimizer_q.param_groups[0]['lr'] = 0.0001
-        elif epoch == 440:
-            beta = 3
-            optimizer_param.param_groups[0]['lr'] = 0.1
-            optimizer_q.param_groups[0]['lr'] = 0.01
-        elif epoch == 510:
-            optimizer_param.param_groups[0]['lr'] = 0.01
-            optimizer_q.param_groups[0]['lr'] = 0.001
-        elif epoch == 550:
-            optimizer_param.param_groups[0]['lr'] = 0.001
-            optimizer_q.param_groups[0]['lr'] = 0.0001
-        elif epoch == 660:
-            optimizer_param.param_groups[0]['lr'] = 0.0002
-            optimizer_q.param_groups[0]['lr'] = 0.00002
+        if epoch == epoch_list[1]:
+            beta = beta_list[1]
+        elif epoch == epoch_list[2]:
+            beta = beta_list[2]
+        elif epoch == epoch_list[3]:
+            beta = beta_list[3]
+        elif epoch == epoch_list[4]:
+            optimizer_prim.param_groups[0]['lr'] /= 5
+            optimizer_q.param_groups[0]['lr'] /= 5
+            optimizer.param_groups[0]['lr'] /= 5
 
         for x, y in train_loader:
             iter_idx += 1  # Counter
@@ -274,11 +288,13 @@ def train(config):
             loss = criterion(logits, y) + model_loss(config, beta, model)
             # Compute gradients
             loss.backward()
-            optimizer_param.step()
+            optimizer_prim.step()
             optimizer_q.step()
+            optimizer.step()
             # Zero the parameter gradients
-            optimizer_param.zero_grad()
+            optimizer_prim.zero_grad()
             optimizer_q.zero_grad()
+            optimizer.zero_grad()
 
             # Monitor results every report interval
             if iter_idx % config.rep_intv == 0:
@@ -287,9 +303,30 @@ def train(config):
                 with torch.no_grad():
                     pred = torch.argmax(logits, dim=1)
                     acc = torch.mean(torch.eq(pred, y).float()) * 100.0
-                # Write loss and accuracy to tensorboard, using keywords `loss` and `accuracy`.
-                train_writer.add_scalar("loss", loss, global_step=iter_idx)
-                train_writer.add_scalar("accuracy", acc, global_step=iter_idx)
+                    # Write loss and accuracy to tensorboard, using keywords `loss` and `accuracy`.
+                    train_writer.add_scalar("data/loss", loss, global_step=iter_idx)
+                    train_writer.add_scalar("data/accuracy", acc, global_step=iter_idx)
+                    for name, param in model.named_parameters():
+                        if 'p_c' in name:
+                            tag = name[:-4] + '/p_c'
+                            train_writer.add_histogram(tag, param, global_step=iter_idx)
+                            if 'conv' in name:
+                                p_c = param
+                                p_c_norm = torch.sqrt(torch.sum(p_c ** 2, dim=-1, keepdim=True))
+                                p_c_normal = p_c / p_c_norm
+                                s_c = torch.exp(beta * p_c_normal) / \
+                                      torch.sum(torch.exp(beta * p_c_normal), dim=-1, keepdim=True)  # the secondary coefficients
+                            elif 'linear' in name:
+                                p_c = param
+                                p_c_norm = torch.sqrt(torch.sum(p_c ** 2, dim=-1, keepdim=True))
+                                p_c_normal = p_c / p_c_norm
+                                s_c = torch.exp(beta * p_c_normal) / \
+                                      torch.sum(torch.exp(beta * p_c_normal), dim=-1, keepdim=True)  # the secondary coefficients
+                            tag = name[:-4] + '/s_c'
+                            train_writer.add_histogram(tag, s_c, global_step=iter_idx)
+                        elif 'q_level' in name:
+                            tag = name[:-8] + '/q_level'
+                            train_writer.add_histogram(tag, param, global_step=iter_idx)
                 # Save
                 torch.save({
                     "beta": beta,
@@ -297,8 +334,9 @@ def train(config):
                     "iter_idx": iter_idx,
                     "best_val_acc": best_val_acc,
                     "model": model.state_dict(),
-                    "optimizer_param": optimizer_param.state_dict(),
-                    "optimizer_q": optimizer_q.state_dict()
+                    "optimizer_prim": optimizer_prim.state_dict(),
+                    "optimizer_q": optimizer_q.state_dict(),
+                    "optimizer": optimizer.state_dict(),
                 }, checkpoint_file)
 
             # Validate results every validation interval
@@ -328,8 +366,8 @@ def train(config):
                 val_loss_avg = np.mean(val_loss)
                 val_acc_avg = np.mean(val_acc)
                 # Write loss and accuracy to tensorboard, using keywords `loss` and `accuracy`.
-                val_writer.add_scalar("loss", val_loss_avg, global_step=iter_idx)
-                val_writer.add_scalar("accuracy", val_acc_avg, global_step=iter_idx)
+                val_writer.add_scalar("data/loss", val_loss_avg, global_step=iter_idx)
+                val_writer.add_scalar("data/accuracy", val_acc_avg, global_step=iter_idx)
                 # Set model back for training
                 model.train()
                 if val_acc_avg > best_val_acc:
@@ -340,14 +378,14 @@ def train(config):
                         "model": model.state_dict(),
                     }, bestmodel_file)
 
-                plot_entropy(config, beta, model, iter_idx)
+                # plot_entropy(config, beta, model, iter_idx)
 
-    print("adp_qtz_best_val_acc: ", best_val_acc)
+    print("best_val_acc: ", best_val_acc)
 
 
 def test(config):
 
-    global beta
+    global beta  # sharpening factor
 
     transform_test = transforms.Compose([
         transforms.ToTensor(),
@@ -365,7 +403,7 @@ def test(config):
         shuffle=False)
 
     # Create model
-    model = ResNet(3, 'test')
+    model = ResNet(config, 3)
     print('\nmodel created')
     # Move model to gpu if cuda is available
     if torch.cuda.is_available():
@@ -379,7 +417,7 @@ def test(config):
         criterion = criterion.cuda()
 
     # Load our best model and set model for testing
-    bestmodel_file = os.path.join(config.save_dir, "bestmodel_adp_qtz.pth")
+    bestmodel_file = os.path.join(config.save_dir, "bestmodel_{}.pth".format(config.name_idx))
     load_res = torch.load(
         bestmodel_file,
         map_location="cpu")
@@ -408,7 +446,7 @@ def test(config):
     test_acc_avg = np.mean(test_acc)
 
     # Report Test loss and accuracy
-    print("adp_qtz_test_acc: ", test_acc_avg)
+    print("test_acc: ", test_acc_avg)
 
 
 def unpickle(file_name):
@@ -493,21 +531,21 @@ class CIFAR10Dataset(Dataset):
 
 
 class MyConv2d(nn.Module):
-    def __init__(self, mode, in_channel, out_channel, ksize, stride, padding, bias=False):
+    def __init__(self, config, in_channel, out_channel, ksize, stride, padding, bias=False):
         super(MyConv2d, self).__init__()
-        # Our custom convolution kernel. We'll initialize it using Kaiming He's
-        # initialization with uniform distribution
-        self.p_c = nn.Parameter(torch.rand((out_channel, in_channel, ksize, ksize, 8)))  # primary coefficients
-        # self.p_c = nn.Parameter(torch.randn((out_channel, in_channel, ksize, ksize, 8)))  # primary coefficients
-        self.q_level = nn.Parameter(torch.Tensor(8))  # quantization levels
-        # self.bias = nn.Parameter(
-        #     torch.randn((outchannel,)),
-        #     requires_grad=True)
+        # primary coefficients initialization
+        if config.prim_init == 'uniform':
+            self.p_c = nn.Parameter(torch.rand((out_channel, in_channel, ksize, ksize, config.num_level_conv)), requires_grad=True)
+        elif config.prim_init == 'normal':
+            self.p_c = nn.Parameter(torch.randn((out_channel, in_channel, ksize, ksize, config.num_level_conv)), requires_grad=True)
+        self.q_level = nn.Parameter(torch.Tensor(config.num_level_conv), requires_grad=True)  # quantization levels
+        # self.bias = nn.Parameter(torch.randn((out_channel,)), requires_grad=True)
         self.ksize = ksize
         self.stride = stride
         self.padding = padding
-        self.mode = mode
-
+        self.mode = config.mode
+        # Our custom convolution kernel. We'll initialize it using Kaiming He's
+        # initialization with uniform distribution
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -559,23 +597,23 @@ class MyConv2d(nn.Module):
                     x_out = cur_o
                 else:
                     x_out += cur_o
-        # # Add bias
         # x_out += self.bias.view(1, self.bias.shape[0], 1, 1)
         return x_out
 
 
 class MyLinear(nn.Module):
-    def __init__(self, mode, in_feature, out_feature, bias=True):
+    def __init__(self, config, in_feature, out_feature, bias=True):
         super(MyLinear, self).__init__()
+        # primary coefficients initialization
+        if config.prim_init == 'uniform':
+            self.p_c = nn.Parameter(torch.rand((in_feature, out_feature, config.num_level_fc)), requires_grad=True)
+        elif config.prim_init == 'normal':
+            self.p_c = nn.Parameter(torch.randn((in_feature, out_feature, config.num_level_fc)), requires_grad=True)
+        self.q_level = nn.Parameter(torch.Tensor(config.num_level_fc), requires_grad=True)  # quantization levels
+        self.bias = nn.Parameter(torch.Tensor(out_feature), requires_grad=True)
+        self.mode = config.mode
         # Our custom linear layer. We'll initialize it using Kaiming He's
         # initialization with uniform distribution
-        self.p_c = nn.Parameter(torch.rand((in_feature, out_feature, 8)))  # primary coefficients
-        # self.p_c = nn.Parameter(torch.randn((infeature, outfeature, 8)))  # primary coefficients
-        self.q_level = nn.Parameter(torch.Tensor(8))  # quantization levels
-        self.bias = nn.Parameter(torch.Tensor(out_feature))
-
-        self.mode = mode
-
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -611,7 +649,7 @@ class MyLinear(nn.Module):
 
 
 class Residual(nn.Module):
-    def __init__(self, mode, in_channel, increase_dim):
+    def __init__(self, config, in_channel, increase_dim):
         super(Residual, self).__init__()
         if not increase_dim:
             out_channel = in_channel
@@ -621,9 +659,9 @@ class Residual(nn.Module):
             stride = 2
 
         self.bn1 = nn.BatchNorm2d(in_channel)
-        self.conv1 = MyConv2d(mode, in_channel, out_channel, ksize=3, stride=stride, padding=1, bias=False)
+        self.conv1 = MyConv2d(config, in_channel, out_channel, ksize=3, stride=stride, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channel)
-        self.conv2 = MyConv2d(mode, out_channel, out_channel, ksize=3, stride=1, padding=1, bias=False)
+        self.conv2 = MyConv2d(config, out_channel, out_channel, ksize=3, stride=1, padding=1, bias=False)
 
         if not increase_dim:
             self.shortcut = nn.Identity()
@@ -641,12 +679,12 @@ class Residual(nn.Module):
 
 
 class PreResidual(nn.Module):
-    def __init__(self, mode, in_channel, increase_dim=False):
+    def __init__(self, config, in_channel, increase_dim=False):
         super(PreResidual, self).__init__()
         out_channel = in_channel
-        self.conv1 = MyConv2d(mode, in_channel, out_channel, ksize=3, stride=1, padding=1, bias=False)
+        self.conv1 = MyConv2d(config, in_channel, out_channel, ksize=3, stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channel)
-        self.conv2 = MyConv2d(mode, out_channel, out_channel, ksize=3, stride=1, padding=1, bias=False)
+        self.conv2 = MyConv2d(config, out_channel, out_channel, ksize=3, stride=1, padding=1, bias=False)
 
     def forward(self, x):
         out = F.relu(self.bn2(self.conv1(x)))
@@ -656,31 +694,31 @@ class PreResidual(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, n, mode):
+    def __init__(self, config, n):
         super(ResNet, self).__init__()
         self.conv0 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn0 = nn.BatchNorm2d(16)
-        self.layer1 = self._make_layer(mode, n, in_plane=16, first=True)
+        self.layer1 = self._make_layer(config, n, in_plane=16, first=True)
         # 32, c = 16
-        self.layer2 = self._make_layer(mode, n, in_plane=16, first=False)
+        self.layer2 = self._make_layer(config, n, in_plane=16, first=False)
         # 16, c = 32
-        self.layer3 = self._make_layer(mode, n, in_plane=32, first=False)
+        self.layer3 = self._make_layer(config, n, in_plane=32, first=False)
         # 8, c = 64
         self.bnlast = nn.BatchNorm2d(64)
         self.ap = nn.AvgPool2d(8)
-        self.linear = MyLinear(mode, in_feature=64, out_feature=10, bias=True)
+        self.linear = MyLinear(config, in_feature=64, out_feature=10, bias=True)
 
-    def _make_layer(self, mode, n, in_plane, first):
+    def _make_layer(self, config, n, in_plane, first):
         layers = []
 
         if not first:
-            layers.append(Residual(mode, in_channel=in_plane, increase_dim=True))
+            layers.append(Residual(config, in_channel=in_plane, increase_dim=True))
             in_plane *= 2
         else:
-            layers.append(PreResidual(mode, in_channel=in_plane, increase_dim=False))
+            layers.append(PreResidual(config, in_channel=in_plane, increase_dim=False))
 
         for k in range(1, n):
-            layers.append(Residual(mode, in_channel=in_plane, increase_dim=False))
+            layers.append(Residual(config, in_channel=in_plane, increase_dim=False))
 
         return nn.Sequential(*layers)
 
@@ -716,49 +754,49 @@ def model_loss(config, beta, model):
     return config.l2_reg * loss
 
 
-def entropy_loss(config, beta, model):
-    loss = 0
-    for name, param in model.named_parameters():
-        if 'p_c' in name:
-            p_c = param
-            p_c_norm = torch.sqrt(torch.sum(p_c ** 2, dim=-1, keepdim=True))
-            p_c_normal = p_c / p_c_norm
-            s_c = torch.exp(beta * p_c_normal) / \
-                torch.sum(torch.exp(beta * p_c_normal), dim=-1, keepdim=True)  # the secondary coefficients
-            loss -= torch.sum(s_c * torch.log(s_c))
+# def entropy_loss(config, beta, model):
+#     loss = 0
+#     for name, param in model.named_parameters():
+#         if 'p_c' in name:
+#             p_c = param
+#             p_c_norm = torch.sqrt(torch.sum(p_c ** 2, dim=-1, keepdim=True))
+#             p_c_normal = p_c / p_c_norm
+#             s_c = torch.exp(beta * p_c_normal) / \
+#                 torch.sum(torch.exp(beta * p_c_normal), dim=-1, keepdim=True)  # the secondary coefficients
+#             loss -= torch.sum(s_c * torch.log(s_c))
+#
+#     return config.sharp * loss
 
-    return config.sharp * loss
 
-
-def plot_entropy(config, beta, model, iter_idx):
-    # plt.style.use('seaborn-white')
-    mpl.use('Agg')
-    fig = plt.figure()
-
-    e_conv = []  # entropy of conv layers
-    for name, param in model.named_parameters():
-        if 'p_c' in name:
-            if 'conv' in name:
-                p_c = param
-                p_c_norm = torch.sqrt(torch.sum(p_c ** 2, dim=-1, keepdim=True))
-                p_c_normal = p_c / p_c_norm
-                s_c = torch.exp(beta * p_c_normal) / \
-                      torch.sum(torch.exp(beta * p_c_normal), dim=-1, keepdim=True)  # the secondary coefficients
-                e_conv.append(torch.sum(-s_c * torch.log(s_c), dim=-1).reshape(-1).cpu())
-            elif 'linear' in name:
-                p_c = param
-                p_c_norm = torch.sqrt(torch.sum(p_c ** 2, dim=-1, keepdim=True))
-                p_c_normal = p_c / p_c_norm
-                s_c = torch.exp(beta * p_c_normal) / \
-                      torch.sum(torch.exp(beta * p_c_normal), dim=-1, keepdim=True)  # the secondary coefficients
-                e_linear = torch.sum(-s_c * torch.log(s_c), dim=-1).reshape(-1).cpu()  # entropy of linear layer
-
-    e_conv = torch.cat(e_conv)
-    plt.hist(e_conv.detach().numpy())
-    fig.savefig(os.path.join(config.plt_dir, 'entropy_conv{}.png'.format(iter_idx)))
-
-    plt.hist(e_linear.detach().numpy())
-    fig.savefig(os.path.join(config.plt_dir, 'entropy_linear{}.png'.format(iter_idx)))
+# def plot_entropy(config, beta, iter_idx, model):
+#     # plt.style.use('seaborn-white')
+#     mpl.use('Agg')
+#     fig = plt.figure()
+#
+#     e_conv = []  # entropy of conv layers
+#     for name, param in model.named_parameters():
+#         if 'p_c' in name:
+#             if 'conv' in name:
+#                 p_c = param
+#                 p_c_norm = torch.sqrt(torch.sum(p_c ** 2, dim=-1, keepdim=True))
+#                 p_c_normal = p_c / p_c_norm
+#                 s_c = torch.exp(beta * p_c_normal) / \
+#                       torch.sum(torch.exp(beta * p_c_normal), dim=-1, keepdim=True)  # the secondary coefficients
+#                 e_conv.append(torch.sum(-s_c * torch.log(s_c), dim=-1).reshape(-1).cpu())
+#             elif 'linear' in name:
+#                 p_c = param
+#                 p_c_norm = torch.sqrt(torch.sum(p_c ** 2, dim=-1, keepdim=True))
+#                 p_c_normal = p_c / p_c_norm
+#                 s_c = torch.exp(beta * p_c_normal) / \
+#                       torch.sum(torch.exp(beta * p_c_normal), dim=-1, keepdim=True)  # the secondary coefficients
+#                 e_linear = torch.sum(-s_c * torch.log(s_c), dim=-1).reshape(-1).cpu()  # entropy of linear layer
+#
+#     e_conv = torch.cat(e_conv)
+#     plt.hist(e_conv.detach().numpy())
+#     fig.savefig(os.path.join(config.plt_dir, 'entropy_conv_{}'.format(config.name_idx), 'fig_{}.png'.format(iter_idx)))
+#
+#     plt.hist(e_linear.detach().numpy())
+#     fig.savefig(os.path.join(config.plt_dir, 'entropy_fc_{}'.format(config.name_idx), 'fig_{}.png'.format(iter_idx)))
 
 
 if __name__ == "__main__":

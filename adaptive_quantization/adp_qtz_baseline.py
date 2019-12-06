@@ -54,25 +54,13 @@ parser.add_argument("--data_dir", type=str,
                     default="/home/pasha/scratch/datasets/cifar-10-batches-py",
                     help="")
 
-# parser.add_argument("--data_dir", type=str,
-#                     default="/home/mostafa/Downloads/datasets/cifar-10-batches-py",
-#                     help="")
-
 parser.add_argument("--save_dir", type=str,
-                    default="/home/pasha/scratch/adaptive_quantization/jobs/output/saves",
+                    default="/home/pasha/scratch/jobs/output/adp_qtz/baseline/saves",
                     help="Directory to save the best model")
 
-# parser.add_argument("--save_dir", type=str,
-#                     default="/home/mostafa/Uvic/Thesis/DL-compression/implementation/adaptive_quantization/jobs/output/saves",
-#                     help="Directory to save the best model")
-
 parser.add_argument("--log_dir", type=str,
-                    default="/home/pasha/scratch/adaptive_quantization/jobs/output/logs",
+                    default="/home/pasha/scratch/jobs/output/adp_qtz/baseline/logs",
                     help="Directory to save logs and current model")
-
-# parser.add_argument("--log_dir", type=str,
-#                     default="/home/mostafa/Uvic/Thesis/DL-compression/implementation/adaptive_quantization/jobs/output/logs",
-#                     help="Directory to save logs and current model")
 
 parser.add_argument("--learning_rate", type=float,
                     default=1e-1,
@@ -101,6 +89,10 @@ parser.add_argument("--l2_reg", type=float,
 parser.add_argument("--resume", type=str2bool,
                     default=True,
                     help="Whether to resume training from existing checkpoint")
+
+parser.add_argument("--name_idx", type=int,
+                    default=1,
+                    help="")
 
 
 def get_config():
@@ -179,17 +171,17 @@ def train(config):
 
     # Create summary writer
     train_writer = SummaryWriter(
-        log_dir=os.path.join(config.log_dir, "train_adp_qtz_baseline"))
+        log_dir=os.path.join(config.log_dir, "train_{}".format(config.name_idx)))
     val_writer = SummaryWriter(
-        log_dir=os.path.join(config.log_dir, "valid_adp_qtz_baseline"))
+        log_dir=os.path.join(config.log_dir, "valid_{}".format(config.name_idx)))
 
     # Initialize training
     start_epoch = 0
     iter_idx = -1  # make counter start at zero
     best_val_acc = 0  # to check if best validation accuracy
     # Prepare checkpoint file and model file to save and load from
-    checkpoint_file = os.path.join(config.save_dir, "checkpoint_adp_qtz_baseline.pth")
-    bestmodel_file = os.path.join(config.save_dir, "bestmodel_adp_qtz_baseline.pth")
+    checkpoint_file = os.path.join(config.save_dir, "checkpoint_{}.path".format(config.name_idx))
+    bestmodel_file = os.path.join(config.save_dir, "bestmodel_{}.path".format(config.name_idx))
 
     # Check for existing training results. If it existst, and the configuration
     # is set to resume `config.resume==True`, resume from previous training. If
@@ -219,7 +211,6 @@ def train(config):
 
     # Training loop
     for epoch in tqdm(range(start_epoch, config.num_epoch)):
-        # print("adp_qtz_baseline_epoch: ", epoch)
         if epoch == 81:
             optimizer.param_groups[0]['lr'] = 0.01
             print('learning_rate: ', optimizer.param_groups[0]['lr'])
@@ -253,8 +244,8 @@ def train(config):
                     pred = torch.argmax(logits, dim=1)
                     acc = torch.mean(torch.eq(pred, y).float()) * 100.0
                 # Write loss and accuracy to tensorboard, using keywords `loss` and `accuracy`.
-                train_writer.add_scalar("loss", loss, global_step=iter_idx)
-                train_writer.add_scalar("accuracy", acc, global_step=iter_idx)
+                train_writer.add_scalar("data/loss", loss, global_step=iter_idx)
+                train_writer.add_scalar("data/accuracy", acc, global_step=iter_idx)
                 # Save
                 torch.save({
                     "epoch": epoch,
@@ -291,8 +282,8 @@ def train(config):
                 val_loss_avg = np.mean(val_loss)
                 val_acc_avg = np.mean(val_acc)
                 # Write loss and accuracy to tensorboard, using keywords `loss` and `accuracy`.
-                val_writer.add_scalar("loss", val_loss_avg, global_step=iter_idx)
-                val_writer.add_scalar("accuracy", val_acc_avg, global_step=iter_idx)
+                val_writer.add_scalar("data/loss", val_loss_avg, global_step=iter_idx)
+                val_writer.add_scalar("data/accuracy", val_acc_avg, global_step=iter_idx)
                 # Set model back for training
                 model.train()
                 if val_acc_avg > best_val_acc:
@@ -306,7 +297,7 @@ def train(config):
                         "optimizer": optimizer.state_dict()
                     }, bestmodel_file)
 
-    print("adp_qtz_baseline_best_val_accuracy: ", best_val_acc)
+    print("best_val_accuracy: ", best_val_acc)
 
 
 def test(config):
@@ -340,7 +331,7 @@ def test(config):
         criterion = criterion.cuda()
 
     # Load our best model and set model for testing
-    bestmodel_file = os.path.join(config.save_dir, "bestmodel_adp_qtz_baseline.pth")
+    bestmodel_file = os.path.join(config.save_dir, "bestmodel_{}.pth".format(config.name_idx))
     load_res = torch.load(
         bestmodel_file,
         map_location="cpu")
@@ -373,8 +364,8 @@ def test(config):
     test_acc_avg = np.mean(test_acc)
 
     # Report Test loss and accuracy
-    print("adp_qtz_baseline_test_loss: ", test_loss_avg)
-    print("adp_qtz_baseline_test_accuracy: ", test_acc_avg)
+    print("test_loss: ", test_loss_avg)
+    print("test_accuracy: ", test_acc_avg)
 
 
 def unpickle(file_name):
