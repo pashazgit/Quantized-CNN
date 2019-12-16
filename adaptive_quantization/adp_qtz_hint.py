@@ -60,15 +60,19 @@ parser.add_argument("--data_dir", type=str,
                     help="")
 
 parser.add_argument("--save_dir", type=str,
-                    default="/home/pasha/scratch/jobs/output/adp_qtz/fan/saves",
+                    default="/home/pasha/scratch/jobs/output/adp_qtz/hint/saves",
+                    help="Directory to save the best model")
+
+parser.add_argument("--save_dir_b", type=str,
+                    default="/home/pasha/scratch/jobs/output/adp_qtz/baseline/saves",
                     help="Directory to save the best model")
 
 parser.add_argument("--log_dir", type=str,
-                    default="/home/pasha/scratch/jobs/output/adp_qtz/fan/logs",
+                    default="/home/pasha/scratch/jobs/output/adp_qtz/hint/logs",
                     help="Directory to save logs and current model")
 
 # parser.add_argument("--plt_dir", type=str,
-#                     default="/home/pasha/scratch/adaptive_quantization/jobs/output/adp_qtz/fan/plts",
+#                     default="/home/pasha/scratch/adaptive_quantization/jobs/output/adp_qtz/hint/plts",
 #                     help="Directory to save logs and current model")
 
 parser.add_argument("--prim_lr", type=float,
@@ -189,8 +193,25 @@ def train(config):
         num_workers=2,
         shuffle=False)
 
+    # Create baseline model instance (ResNet20)
+    model_b = ResNet_b(3)
+    # Load our baseline model
+    bestmodel_file = os.path.join(config.save_dir_b, "bestmodel_1.pth")
+    load_res = torch.load(
+        bestmodel_file,
+        map_location="cpu")
+    model_b.load_state_dict(load_res["model"])
+    s = []  # list of scales for conv layers
+    for name, param in model_b.named_parameters():
+        if ('conv' in name and 'weight' in name) or ('linear' in name and 'weight' in name):
+            s.append(torch.max(torch.abs(param)).item())
+        elif 'linear' in name and 'bias' in name:
+            v = param  # bias vector
+
+    assert len(s) == 20
+
     # Create model instance.
-    model = ResNet(config, 3)
+    model = ResNet(config, s, v)
     print('\nmodel created')
     # Move model to gpu if cuda is available
     if torch.cuda.is_available():
@@ -530,8 +551,94 @@ class CIFAR10Dataset(Dataset):
         return len(self.data)
 
 
+class Residual_b(nn.Module):
+    def __init__(self, in_channel, increase_dim):
+        super(Residual_b, self).__init__()
+        if not increase_dim:
+            out_channel = in_channel
+            stride = 1
+        else:
+            out_channel = in_channel * 2
+            stride = 2
+
+        self.bn1 = nn.BatchNorm2d(in_channel)
+        self.conv1 = nn.Conv2d(in_channel, out_channel, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channel)
+        self.conv2 = nn.Conv2d(out_channel, out_channel, kernel_size=3, stride=1, padding=1, bias=False)
+
+        if not increase_dim:
+            self.shortcut = nn.Identity()
+        else:
+            self.shortcut = nn.Sequential(
+                nn.AvgPool2d(2),
+                nn.ZeroPad2d((0, 0, 0, 0, in_channel//2, in_channel//2)))
+
+    def forward(self, x):
+        out = F.relu(self.bn1(x))
+        out = F.relu(self.bn2(self.conv1(out)))
+        out = self.conv2(out)
+        out += self.shortcut(x)
+        return out
+
+
+class PreResidual_b(nn.Module):
+    def __init__(self, in_channel, increase_dim=False):
+        super(PreResidual_b, self).__init__()
+        out_channel = in_channel
+        self.conv1 = nn.Conv2d(in_channel, out_channel, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channel)
+        self.conv2 = nn.Conv2d(out_channel, out_channel, kernel_size=3, stride=1, padding=1, bias=False)
+
+    def forward(self, x):
+        out = F.relu(self.bn2(self.conv1(x)))
+        out = (self.conv2(out))
+        out += x
+        return out
+
+
+class ResNet_b(nn.Module):
+    def __init__(self, n):
+        super(ResNet_b, self).__init__()
+        self.conv0 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn0 = nn.BatchNorm2d(16)
+        self.layer1 = self._make_layer(n, in_plane=16, first=True)
+        # 32, c = 16
+        self.layer2 = self._make_layer(n, in_plane=16, first=False)
+        # 16, c = 32
+        self.layer3 = self._make_layer(n, in_plane=32, first=False)
+        # 8, c = 64
+        self.bnlast = nn.BatchNorm2d(64)
+        self.ap = nn.AvgPool2d(8)
+        self.linear = nn.Linear(64, 10)
+
+    def _make_layer(self, n, in_plane, first):
+        layers = []
+
+        if not first:
+            layers.append(Residual_b(in_channel=in_plane, increase_dim=True))
+            in_plane *= 2
+        else:
+            layers.append(PreResidual_b(in_channel=in_plane, increase_dim=False))
+
+        for k in range(1, n):
+            layers.append(Residual_b(in_channel=in_plane, increase_dim=False))
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = F.relu(self.bn0(self.conv0(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = F.relu(self.bnlast(out))
+        out = self.ap(out)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return out
+
+
 class MyConv2d(nn.Module):
-    def __init__(self, config, in_channel, out_channel, ksize, stride, padding, bias=False):
+    def __init__(self, config, s, in_channel, out_channel, ksize, stride, padding, bias=False):
         super(MyConv2d, self).__init__()
         # primary coefficients initialization
         if config.prim_init == 'uniform':
@@ -544,20 +651,14 @@ class MyConv2d(nn.Module):
         self.stride = stride
         self.padding = padding
         self.mode = config.mode
-        # Our custom convolution kernel. We'll initialize it using Kaiming He's
-        # initialization with uniform distribution
-        self.reset_parameters()
+        # Our custom convolution kernel. We'll initialize it using hint from pretrained model
+        self.reset_parameters(config.num_level_conv, s)
 
-    def reset_parameters(self):
-        num_input_fmaps = self.p_c.size(1)
-        fan_in = num_input_fmaps * self.p_c[0, 0, :, :, 0].numel()
-
-        a = math.sqrt(5)
-        gain = math.sqrt(2.0 / (1 + a ** 2))
-        std = gain / math.sqrt(fan_in)
-        bound = math.sqrt(3.0) * std
-        with torch.no_grad():
-            self.q_level.uniform_(-bound, bound)
+    def reset_parameters(self, num_level, s):
+        t1 = num_level / 2
+        t2 = math.floor(math.log(s, 2))
+        t3 = torch.arange(t2 - t1 + 1, t2 + 1)
+        self.q_level.data[:] = torch.cat(((-2 ** t3).sort()[0], 2 ** t3))
 
     def forward(self, x):
         p_c_norm = torch.sqrt(torch.sum(self.p_c**2, dim=-1, keepdim=True))
@@ -602,7 +703,7 @@ class MyConv2d(nn.Module):
 
 
 class MyLinear(nn.Module):
-    def __init__(self, config, in_feature, out_feature, bias=True):
+    def __init__(self, config, s, v, in_feature, out_feature, bias=True):
         super(MyLinear, self).__init__()
         # primary coefficients initialization
         if config.prim_init == 'uniform':
@@ -612,23 +713,17 @@ class MyLinear(nn.Module):
         self.q_level = nn.Parameter(torch.Tensor(config.num_level_fc), requires_grad=True)  # quantization levels
         self.bias = nn.Parameter(torch.Tensor(out_feature), requires_grad=True)
         self.mode = config.mode
-        # Our custom linear layer. We'll initialize it using Kaiming He's
-        # initialization with uniform distribution
-        self.reset_parameters()
+        # Our custom linear layer. We'll initialize it using hint from pretrained model
+        self.reset_parameters(config.num_level_fc, s, v)
 
-    def reset_parameters(self):
-        fan_in = self.p_c.size(0)
+    def reset_parameters(self, num_level, s, v):
+        t1 = num_level / 2
+        t2 = math.floor(math.log(s, 2))
+        t3 = torch.arange(t2-t1+1, t2+1)
+        self.q_level.data[:] = torch.cat(((-2**t3).sort()[0], 2**t3))
 
-        a = math.sqrt(5)
-        gain = math.sqrt(2.0 / (1 + a ** 2))
-        std = gain / math.sqrt(fan_in)
-        bound = math.sqrt(3.0) * std
         with torch.no_grad():
-            self.q_level.uniform_(-bound, bound)
-
-        bound = 1 / math.sqrt(fan_in)
-        with torch.no_grad():
-            self.bias.uniform_(-bound, bound)
+            self.bias.data[:] = v.data
 
     def forward(self, x):
         p_c_norm = torch.sqrt(torch.sum(self.p_c ** 2, dim=-1, keepdim=True))
@@ -649,7 +744,7 @@ class MyLinear(nn.Module):
 
 
 class Residual(nn.Module):
-    def __init__(self, config, in_channel, increase_dim):
+    def __init__(self, config, s1, s2, in_channel, increase_dim):
         super(Residual, self).__init__()
         if not increase_dim:
             out_channel = in_channel
@@ -659,9 +754,9 @@ class Residual(nn.Module):
             stride = 2
 
         self.bn1 = nn.BatchNorm2d(in_channel)
-        self.conv1 = MyConv2d(config, in_channel, out_channel, ksize=3, stride=stride, padding=1, bias=False)
+        self.conv1 = MyConv2d(config, s1, in_channel, out_channel, ksize=3, stride=stride, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channel)
-        self.conv2 = MyConv2d(config, out_channel, out_channel, ksize=3, stride=1, padding=1, bias=False)
+        self.conv2 = MyConv2d(config, s2, out_channel, out_channel, ksize=3, stride=1, padding=1, bias=False)
 
         if not increase_dim:
             self.shortcut = nn.Identity()
@@ -679,12 +774,12 @@ class Residual(nn.Module):
 
 
 class PreResidual(nn.Module):
-    def __init__(self, config, in_channel, increase_dim=False):
+    def __init__(self, config, s1, s2, in_channel, increase_dim=False):
         super(PreResidual, self).__init__()
         out_channel = in_channel
-        self.conv1 = MyConv2d(config, in_channel, out_channel, ksize=3, stride=1, padding=1, bias=False)
+        self.conv1 = MyConv2d(config, s1, in_channel, out_channel, ksize=3, stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channel)
-        self.conv2 = MyConv2d(config, out_channel, out_channel, ksize=3, stride=1, padding=1, bias=False)
+        self.conv2 = MyConv2d(config, s2, out_channel, out_channel, ksize=3, stride=1, padding=1, bias=False)
 
     def forward(self, x):
         out = F.relu(self.bn2(self.conv1(x)))
@@ -694,33 +789,31 @@ class PreResidual(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, config, n):
+    def __init__(self, config, s, v):
         super(ResNet, self).__init__()
         self.conv0 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn0 = nn.BatchNorm2d(16)
-        self.layer1 = self._make_layer(config, n, in_plane=16, first=True)
+        layers = []
+        layers.append(PreResidual(config, s[1], s[2], in_channel=16, increase_dim=False))
+        layers.append(Residual(config, s[3], s[4], in_channel=16, increase_dim=False))
+        layers.append(Residual(config, s[5], s[6], in_channel=16, increase_dim=False))
+        self.layer1 = nn.Sequential(*layers)
         # 32, c = 16
-        self.layer2 = self._make_layer(config, n, in_plane=16, first=False)
+        layers = []
+        layers.append(Residual(config, s[7], s[8], in_channel=16, increase_dim=True))
+        layers.append(Residual(config, s[9], s[10], in_channel=32, increase_dim=False))
+        layers.append(Residual(config, s[11], s[12], in_channel=32, increase_dim=False))
+        self.layer2 = nn.Sequential(*layers)
         # 16, c = 32
-        self.layer3 = self._make_layer(config, n, in_plane=32, first=False)
+        layers = []
+        layers.append(Residual(config, s[13], s[14], in_channel=32, increase_dim=True))
+        layers.append(Residual(config, s[15], s[16], in_channel=64, increase_dim=False))
+        layers.append(Residual(config, s[17], s[18], in_channel=64, increase_dim=False))
+        self.layer3 = nn.Sequential(*layers)
         # 8, c = 64
         self.bnlast = nn.BatchNorm2d(64)
         self.ap = nn.AvgPool2d(8)
-        self.linear = MyLinear(config, in_feature=64, out_feature=10, bias=True)
-
-    def _make_layer(self, config, n, in_plane, first):
-        layers = []
-
-        if not first:
-            layers.append(Residual(config, in_channel=in_plane, increase_dim=True))
-            in_plane *= 2
-        else:
-            layers.append(PreResidual(config, in_channel=in_plane, increase_dim=False))
-
-        for k in range(1, n):
-            layers.append(Residual(config, in_channel=in_plane, increase_dim=False))
-
-        return nn.Sequential(*layers)
+        self.linear = MyLinear(config, s[19], v, in_feature=64, out_feature=10, bias=True)
 
     def forward(self, x):
         out = F.relu(self.bn0(self.conv0(x)))
