@@ -60,7 +60,7 @@ parser.add_argument("--data_dir", type=str,
                     help="")
 
 parser.add_argument("--save_dir", type=str,
-                    default="/home/pasha/scratch/jobs/output/adp_qtz/hint/saves",
+                    default="/home/pasha/scratch/jobs/output/adp_qtz/fix/saves",
                     help="Directory to save the best model")
 
 parser.add_argument("--save_dir_b", type=str,
@@ -68,11 +68,11 @@ parser.add_argument("--save_dir_b", type=str,
                     help="Directory to save the best model")
 
 parser.add_argument("--log_dir", type=str,
-                    default="/home/pasha/scratch/jobs/output/adp_qtz/hint/logs",
+                    default="/home/pasha/scratch/jobs/output/adp_qtz/fix/logs",
                     help="Directory to save logs and current model")
 
 # parser.add_argument("--plt_dir", type=str,
-#                     default="/home/pasha/scratch/adaptive_quantization/jobs/output/adp_qtz/hint/plts",
+#                     default="/home/pasha/scratch/adaptive_quantization/jobs/output/adp_qtz/fix/plts",
 #                     help="Directory to save logs and current model")
 
 parser.add_argument("--prim_lr", type=float,
@@ -131,6 +131,10 @@ parser.add_argument("--beta_list", type=str,
 parser.add_argument("--epoch_list", type=str,
                        default="[0, 70, 140, 210, 300]",
                        help="list of inc training epochs")
+
+parser.add_argument("--liar", type=str2bool,
+                    default=True,
+                    help="Whether to round or lower the range of the weights within a layer")
 
 parser.add_argument("--resume", type=str2bool,
                     default=True,
@@ -642,24 +646,23 @@ class MyConv2d(nn.Module):
         super(MyConv2d, self).__init__()
         # primary coefficients initialization
         if config.prim_init == 'uniform':
-            self.p_c = nn.Parameter(torch.rand((out_channel, in_channel, ksize, ksize, config.num_level_conv)), requires_grad=True)
+            self.p_c = nn.Parameter(torch.rand((out_channel, in_channel, ksize, ksize, config.num_level_conv-1)), requires_grad=True)
         elif config.prim_init == 'normal':
-            self.p_c = nn.Parameter(torch.randn((out_channel, in_channel, ksize, ksize, config.num_level_conv)), requires_grad=True)
-        self.q_level = nn.Parameter(torch.Tensor(config.num_level_conv), requires_grad=True)  # quantization levels
+            self.p_c = nn.Parameter(torch.randn((out_channel, in_channel, ksize, ksize, config.num_level_conv-1)), requires_grad=True)
+        self.q_level = nn.Parameter(torch.Tensor(config.num_level_conv-1), requires_grad=False)  # quantization levels
         # self.bias = nn.Parameter(torch.randn((out_channel,)), requires_grad=True)
         self.ksize = ksize
         self.stride = stride
         self.padding = padding
         self.mode = config.mode
-        # Our custom convolution kernel. We'll initialize it using hint from pretrained model
+        # Our custom convolution kernel. We'll initialize it by fixed quantization levels
         self.reset_parameters(config.num_level_conv, s)
 
     def reset_parameters(self, num_level, s):
         t1 = num_level / 2
-        t2 = math.floor(math.log(s, 2))
-        t3 = torch.arange(t2 - t1 + 1, t2 + 1)
-        with torch.no_grad():
-            self.q_level.data[:] = torch.cat(((-2 ** t3).sort()[0], 2 ** t3))
+        t2 = math.floor(math.log(s, 2)) if config.liar else round(math.log(s, 2))
+        t3 = torch.arange(t2 - t1 + 2, t2 + 1)
+        self.q_level.data[:] = torch.cat(((-2 ** t3).sort()[0], torch.zeros(1), 2 ** t3))
 
     def forward(self, x):
         p_c_norm = torch.sqrt(torch.sum(self.p_c**2, dim=-1, keepdim=True))
@@ -708,21 +711,20 @@ class MyLinear(nn.Module):
         super(MyLinear, self).__init__()
         # primary coefficients initialization
         if config.prim_init == 'uniform':
-            self.p_c = nn.Parameter(torch.rand((in_feature, out_feature, config.num_level_fc)), requires_grad=True)
+            self.p_c = nn.Parameter(torch.rand((in_feature, out_feature, config.num_level_fc-1)), requires_grad=True)
         elif config.prim_init == 'normal':
-            self.p_c = nn.Parameter(torch.randn((in_feature, out_feature, config.num_level_fc)), requires_grad=True)
-        self.q_level = nn.Parameter(torch.Tensor(config.num_level_fc), requires_grad=True)  # quantization levels
+            self.p_c = nn.Parameter(torch.randn((in_feature, out_feature, config.num_level_fc-1)), requires_grad=True)
+        self.q_level = nn.Parameter(torch.Tensor(config.num_level_fc-1), requires_grad=False)  # quantization levels
         self.bias = nn.Parameter(torch.Tensor(out_feature), requires_grad=True)
         self.mode = config.mode
-        # Our custom linear layer. We'll initialize it using hint from pretrained model
+        # Our custom linear layer. We'll initialize it by fixed quantization levels
         self.reset_parameters(config.num_level_fc, s, v)
 
     def reset_parameters(self, num_level, s, v):
         t1 = num_level / 2
-        t2 = math.floor(math.log(s, 2))
-        t3 = torch.arange(t2-t1+1, t2+1)
-        with torch.no_grad():
-            self.q_level.data[:] = torch.cat(((-2**t3).sort()[0], 2**t3))
+        t2 = math.floor(math.log(s, 2)) if config.liar else round(math.log(s, 2))
+        t3 = torch.arange(t2 - t1 + 2, t2 + 1)
+        self.q_level.data[:] = torch.cat(((-2 ** t3).sort()[0], torch.zeros(1), 2 ** t3))
 
         with torch.no_grad():
             self.bias.data[:] = v.data
